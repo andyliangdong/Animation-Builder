@@ -31,8 +31,11 @@ const App: React.FC = () => {
   // Audio References
   const audioContextRef = useRef<AudioContext | null>(null);
   const activeSourceRef = useRef<AudioBufferSourceNode | null>(null);
-  const audioCacheRef = useRef<Map<number, AudioBuffer>>(new Map()); // Cache for Gemini TTS buffers
-  const audioLoadingPromisesRef = useRef<Map<number, Promise<AudioBuffer>>>(new Map()); // Track in-flight requests
+  
+  // CHANGE: Cache keyed by text content (string) instead of index (number)
+  // This allows audio to persist when switching between history items
+  const audioCacheRef = useRef<Map<string, AudioBuffer>>(new Map()); 
+  const audioLoadingPromisesRef = useRef<Map<string, Promise<AudioBuffer>>>(new Map()); 
 
   // Export References
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -61,19 +64,26 @@ const App: React.FC = () => {
     setIsSpeaking(false);
   }, []);
 
+  // Helper to generate a unique key for the audio cache based on content
+  const getAudioKey = useCallback((step: SketchStep) => {
+    return `${step.title.trim()}|${step.description.trim()}`;
+  }, []);
+
   // Core function to load audio (checks cache -> checks in-flight -> generates)
   const ensureAudioLoaded = useCallback(async (index: number): Promise<AudioBuffer> => {
     const step = steps[index];
     if (!step) throw new Error("Step not found");
 
+    const key = getAudioKey(step);
+
     // 1. Check Cache
-    if (audioCacheRef.current.has(index)) {
-      return audioCacheRef.current.get(index)!;
+    if (audioCacheRef.current.has(key)) {
+      return audioCacheRef.current.get(key)!;
     }
 
     // 2. Check In-Flight Promise (deduplicate requests)
-    if (audioLoadingPromisesRef.current.has(index)) {
-      return audioLoadingPromisesRef.current.get(index)!;
+    if (audioLoadingPromisesRef.current.has(key)) {
+      return audioLoadingPromisesRef.current.get(key)!;
     }
 
     // 3. Generate New
@@ -82,26 +92,24 @@ const App: React.FC = () => {
         const text = `${step.title}. ${step.description}`;
         const b64 = await generateSpeech(text);
         
-        // We need the context to decode, but we don't want to suspend/resume here unnecessarily
-        // just to decode. Decoding usually works fine on a suspended context.
         const ctx = getAudioContext(); 
         const bytes = base64ToBytes(b64);
         const buffer = pcmToAudioBuffer(bytes, ctx);
         
-        audioCacheRef.current.set(index, buffer);
+        audioCacheRef.current.set(key, buffer);
         return buffer;
       } catch (e) {
         console.error(`Failed to load audio for step ${index}`, e);
         throw e;
       } finally {
         // Remove from promise map so if it failed we can try again later
-        audioLoadingPromisesRef.current.delete(index);
+        audioLoadingPromisesRef.current.delete(key);
       }
     })();
 
-    audioLoadingPromisesRef.current.set(index, promise);
+    audioLoadingPromisesRef.current.set(key, promise);
     return promise;
-  }, [steps, getAudioContext]);
+  }, [steps, getAudioContext, getAudioKey]);
 
   const playAudioForStep = useCallback(async (index: number) => {
     const step = steps[index];
@@ -110,8 +118,10 @@ const App: React.FC = () => {
     stopSpeaking();
 
     try {
+      const key = getAudioKey(step);
+      
       // Optimistically set loading if not cached
-      if (!audioCacheRef.current.has(index)) {
+      if (!audioCacheRef.current.has(key)) {
         setIsLoadingAudio(true);
       }
 
@@ -143,7 +153,7 @@ const App: React.FC = () => {
       setIsLoadingAudio(false);
       setIsSpeaking(false);
     }
-  }, [steps, getAudioContext, stopSpeaking, ensureAudioLoaded]);
+  }, [steps, getAudioContext, stopSpeaking, ensureAudioLoaded, getAudioKey]);
 
   const toggleSpeech = () => {
     if (isSpeaking) {
@@ -171,7 +181,7 @@ const App: React.FC = () => {
       const nextNextIndex = currentStepIndex + 2;
 
       if (nextIndex < steps.length) {
-        ensureAudioLoaded(nextIndex).catch(() => {}); // catch to prevent unhandled rejection
+        ensureAudioLoaded(nextIndex).catch(() => {});
       }
       if (nextNextIndex < steps.length) {
          ensureAudioLoaded(nextNextIndex).catch(() => {});
@@ -211,7 +221,9 @@ const App: React.FC = () => {
 
       // 1. Ensure ALL audio buffers are cached
       for (let i = 0; i < steps.length; i++) {
-        if (!audioCacheRef.current.has(i)) {
+        const step = steps[i];
+        const key = getAudioKey(step);
+        if (!audioCacheRef.current.has(key)) {
           setExportProgress(`Generating Audio (${i + 1}/${steps.length})...`);
           await ensureAudioLoaded(i);
         }
@@ -249,9 +261,6 @@ const App: React.FC = () => {
         
         setIsExporting(false);
         setExportProgress('');
-        
-        // Return to first step or current step
-        // We stay on the last step played usually
       };
 
       mediaRecorderRef.current = recorder;
@@ -276,8 +285,11 @@ const App: React.FC = () => {
            canvasRef.current?.replay();
            
            // Get cached buffer
-           const buffer = audioCacheRef.current.get(index);
-           if (!buffer) return; // Should not happen
+           const step = steps[index];
+           const key = getAudioKey(step);
+           const buffer = audioCacheRef.current.get(key);
+           
+           if (!buffer) return; 
 
            const source = ctx.createBufferSource();
            source.buffer = buffer;
@@ -290,7 +302,7 @@ const App: React.FC = () => {
            };
 
            source.start();
-        }, 100); // Short delay to ensure React updated the canvas code prop
+        }, 100); 
       };
 
       // Start the chain
@@ -311,9 +323,9 @@ const App: React.FC = () => {
     if (!query.trim()) return;
 
     stopSpeaking();
-    // Clear audio cache on new search
-    audioCacheRef.current.clear();
-    audioLoadingPromisesRef.current.clear();
+    
+    // NOTE: We do NOT clear the audio cache here anymore.
+    // This allows re-visiting previous queries without re-generating audio.
     
     // Close dropdown
     setShowDropdown(false);
@@ -343,8 +355,8 @@ const App: React.FC = () => {
 
   const loadHistoryItem = (item: HistoryItem) => {
     stopSpeaking();
-    audioCacheRef.current.clear();
-    audioLoadingPromisesRef.current.clear();
+    
+    // NOTE: We do NOT clear the audio cache here anymore.
     
     setQuery(item.query);
     setSteps(item.steps);
