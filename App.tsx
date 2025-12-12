@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Pencil, Search, Loader2, Volume2, StopCircle, History, Trash2, ChevronRight, Video, Download, RefreshCw } from 'lucide-react';
+import { Pencil, Search, Loader2, Volume2, StopCircle, History, Trash2, ChevronRight, Video, Download, RefreshCw, VolumeX } from 'lucide-react';
 import { generateSketchSteps, generateSpeech, regenerateSingleStep } from './services/geminiService';
 import { getHistory, saveHistoryItem, deleteHistoryItem } from './services/storageService';
 import { base64ToBytes, pcmToAudioBuffer } from './utils/audio';
@@ -17,6 +17,7 @@ const App: React.FC = () => {
   // Audio State
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isLoadingAudio, setIsLoadingAudio] = useState(false);
+  const [quotaExceeded, setQuotaExceeded] = useState(false);
   
   // Export State
   const [isExporting, setIsExporting] = useState(false);
@@ -35,8 +36,10 @@ const App: React.FC = () => {
   const audioContextRef = useRef<AudioContext | null>(null);
   const activeSourceRef = useRef<AudioBufferSourceNode | null>(null);
   
-  // CHANGE: Cache keyed by text content (string) instead of index (number)
-  // This allows audio to persist when switching between history items
+  // Track current step in a ref to prevent race conditions in async audio playback
+  const currentStepRef = useRef(currentStepIndex);
+  
+  // Cache keyed by text content (string)
   const audioCacheRef = useRef<Map<string, AudioBuffer>>(new Map()); 
   const audioLoadingPromisesRef = useRef<Map<string, Promise<AudioBuffer>>>(new Map()); 
 
@@ -57,6 +60,11 @@ const App: React.FC = () => {
     setHistory(getHistory());
   }, []);
 
+  // Sync ref with state
+  useEffect(() => {
+    currentStepRef.current = currentStepIndex;
+  }, [currentStepIndex]);
+
   // --- Audio Logic (Gemini TTS) ---
 
   const stopSpeaking = useCallback(() => {
@@ -67,13 +75,15 @@ const App: React.FC = () => {
     setIsSpeaking(false);
   }, []);
 
-  // Helper to generate a unique key for the audio cache based on content
   const getAudioKey = useCallback((step: SketchStep) => {
     return `${step.title.trim()}|${step.description.trim()}`;
   }, []);
 
   // Core function to load audio (checks cache -> checks in-flight -> generates)
   const ensureAudioLoaded = useCallback(async (index: number): Promise<AudioBuffer> => {
+    // Fail fast if we know we are out of quota to prevent hammering API
+    if (quotaExceeded) throw new Error("Quota exceeded");
+
     const step = steps[index];
     if (!step) throw new Error("Step not found");
 
@@ -101,22 +111,29 @@ const App: React.FC = () => {
         
         audioCacheRef.current.set(key, buffer);
         return buffer;
-      } catch (e) {
+      } catch (e: any) {
         console.error(`Failed to load audio for step ${index}`, e);
+        
+        // If we hit a persistent 429, set global flag to stop trying
+        if (e?.status === 429 || e?.code === 429 || e?.message?.includes('429')) {
+           setQuotaExceeded(true);
+        }
+        
         throw e;
       } finally {
-        // Remove from promise map so if it failed we can try again later
         audioLoadingPromisesRef.current.delete(key);
       }
     })();
 
     audioLoadingPromisesRef.current.set(key, promise);
     return promise;
-  }, [steps, getAudioContext, getAudioKey]);
+  }, [steps, getAudioContext, getAudioKey, quotaExceeded]);
 
   const playAudioForStep = useCallback(async (index: number) => {
     const step = steps[index];
     if (!step) return;
+
+    if (quotaExceeded) return;
 
     stopSpeaking();
 
@@ -129,13 +146,18 @@ const App: React.FC = () => {
       }
 
       const ctx = getAudioContext();
-      // Resume context if suspended (browser requirement)
       if (ctx.state === 'suspended') {
         await ctx.resume();
       }
 
-      // Fetch or get from cache/promise
       const buffer = await ensureAudioLoaded(index);
+      
+      // CRITICAL: Check if the user is still on the same step that initiated the playback.
+      // If the user navigated away while the audio was loading, do NOT start playback.
+      if (index !== currentStepRef.current) {
+        return;
+      }
+
       setIsLoadingAudio(false);
 
       const source = ctx.createBufferSource();
@@ -152,11 +174,14 @@ const App: React.FC = () => {
       setIsSpeaking(true);
 
     } catch (err) {
-      console.error("Audio Playback Error:", err);
-      setIsLoadingAudio(false);
-      setIsSpeaking(false);
+      console.warn("Audio Playback aborted or failed");
+      // If we are still on the same step, update UI
+      if (index === currentStepRef.current) {
+        setIsLoadingAudio(false);
+        setIsSpeaking(false);
+      }
     }
-  }, [steps, getAudioContext, stopSpeaking, ensureAudioLoaded, getAudioKey]);
+  }, [steps, getAudioContext, stopSpeaking, ensureAudioLoaded, getAudioKey, quotaExceeded]);
 
   const toggleSpeech = () => {
     if (isSpeaking) {
@@ -176,34 +201,34 @@ const App: React.FC = () => {
     };
   }, [stopSpeaking]);
 
-  // --- Pre-fetch Logic ---
+  // --- Throttled Pre-fetch Logic ---
   useEffect(() => {
-    if (appState === AppState.SUCCESS && steps.length > 0) {
-      // Pre-fetch the next 2 steps
-      const nextIndex = currentStepIndex + 1;
-      const nextNextIndex = currentStepIndex + 2;
+    if (appState === AppState.SUCCESS && steps.length > 0 && !quotaExceeded) {
+      // Debounce the pre-fetch by 1.5 seconds.
+      // This ensures we only pre-fetch if the user stays on a step for a bit.
+      const timer = setTimeout(() => {
+        const nextIndex = currentStepIndex + 1;
+        // Only pre-fetch 1 step ahead (reduced from 2) to save quota
+        if (nextIndex < steps.length) {
+          ensureAudioLoaded(nextIndex).catch(() => {});
+        }
+      }, 1500);
 
-      if (nextIndex < steps.length) {
-        ensureAudioLoaded(nextIndex).catch(() => {});
-      }
-      if (nextNextIndex < steps.length) {
-         ensureAudioLoaded(nextNextIndex).catch(() => {});
-      }
+      return () => clearTimeout(timer);
     }
-  }, [currentStepIndex, appState, steps, ensureAudioLoaded]);
+  }, [currentStepIndex, appState, steps, ensureAudioLoaded, quotaExceeded]);
 
 
   // --- Auto Play Logic ---
-
   useEffect(() => {
-    // Only auto-play if we are successful, have steps, and NOT currently exporting video
-    if (appState === AppState.SUCCESS && steps.length > 0 && !isExporting) {
+    // Only auto-play if we are successful, have steps, not exporting, and have quota
+    if (appState === AppState.SUCCESS && steps.length > 0 && !isExporting && !quotaExceeded) {
       const timer = setTimeout(() => {
         playAudioForStep(currentStepIndex);
       }, 500);
       return () => clearTimeout(timer);
     }
-  }, [currentStepIndex, appState, steps, isExporting, playAudioForStep]);
+  }, [currentStepIndex, appState, steps, isExporting, playAudioForStep, quotaExceeded]);
 
 
   // --- Export Video Logic (Optimized) ---
@@ -219,7 +244,6 @@ const App: React.FC = () => {
       const ctx = getAudioContext();
       if (ctx.state === 'suspended') await ctx.resume();
       
-      // Setup stream destination
       const dest = ctx.createMediaStreamDestination();
 
       // 1. Ensure ALL audio buffers are cached
@@ -228,7 +252,11 @@ const App: React.FC = () => {
         const key = getAudioKey(step);
         if (!audioCacheRef.current.has(key)) {
           setExportProgress(`Generating Audio (${i + 1}/${steps.length})...`);
-          await ensureAudioLoaded(i);
+          try {
+             await ensureAudioLoaded(i);
+          } catch (e) {
+             console.warn(`Could not load audio for step ${i}, continuing without audio.`);
+          }
         }
       }
 
@@ -237,7 +265,7 @@ const App: React.FC = () => {
       const canvasElement = canvasRef.current?.getCanvas();
       if (!canvasElement) throw new Error("Canvas not found");
       
-      const canvasStream = canvasElement.captureStream(30); // 30 FPS
+      const canvasStream = canvasElement.captureStream(30); 
       const combinedStream = new MediaStream([
         ...canvasStream.getVideoTracks(),
         ...dest.stream.getAudioTracks()
@@ -245,7 +273,7 @@ const App: React.FC = () => {
 
       const recorder = new MediaRecorder(combinedStream, { 
         mimeType: 'video/webm; codecs=vp9',
-        videoBitsPerSecond: 2500000 // 2.5 Mbps
+        videoBitsPerSecond: 2500000 
       });
       chunksRef.current = [];
       
@@ -270,45 +298,38 @@ const App: React.FC = () => {
       recorder.start();
 
       // 3. Playback Sequence
-      // Helper to play a single step for export
       const playExportStep = (index: number) => {
         if (index >= steps.length) {
-          // Finished
           setTimeout(() => mediaRecorderRef.current?.stop(), 1000);
           return;
         }
 
         setExportProgress(`Recording Step ${index + 1}/${steps.length}...`);
-        
-        // Set visual state
         setCurrentStepIndex(index);
         
-        // Force canvas replay
         setTimeout(() => {
            canvasRef.current?.replay();
            
-           // Get cached buffer
            const step = steps[index];
            const key = getAudioKey(step);
            const buffer = audioCacheRef.current.get(key);
            
-           if (!buffer) return; 
-
-           const source = ctx.createBufferSource();
-           source.buffer = buffer;
-           source.connect(dest);
-           source.connect(ctx.destination); // Feedback to user
-
-           source.onended = () => {
-             // Delay before next step
-             setTimeout(() => playExportStep(index + 1), 1000);
-           };
-
-           source.start();
+           if (buffer) {
+             const source = ctx.createBufferSource();
+             source.buffer = buffer;
+             source.connect(dest);
+             source.connect(ctx.destination);
+             source.onended = () => {
+               setTimeout(() => playExportStep(index + 1), 1000);
+             };
+             source.start();
+           } else {
+             // If no audio (due to error/quota), just wait a fixed time (e.g., 5s)
+             setTimeout(() => playExportStep(index + 1), 5000);
+           }
         }, 100); 
       };
 
-      // Start the chain
       playExportStep(0);
 
     } catch (err) {
@@ -327,10 +348,9 @@ const App: React.FC = () => {
 
     stopSpeaking();
     
-    // NOTE: We do NOT clear the audio cache here anymore.
-    // This allows re-visiting previous queries without re-generating audio.
+    // Reset quota flag on new search to try again
+    setQuotaExceeded(false); 
     
-    // Close dropdown
     setShowDropdown(false);
     
     setAppState(AppState.LOADING);
@@ -358,8 +378,7 @@ const App: React.FC = () => {
 
   const loadHistoryItem = (item: HistoryItem) => {
     stopSpeaking();
-    
-    // NOTE: We do NOT clear the audio cache here anymore.
+    setQuotaExceeded(false);
     
     setQuery(item.query);
     setSteps(item.steps);
@@ -384,18 +403,15 @@ const App: React.FC = () => {
     try {
       const newCode = await regenerateSingleStep(currentStepData.title, currentStepData.description);
       
-      // Update local state
       const newSteps = [...steps];
       newSteps[currentStepIndex] = { ...currentStepData, code: newCode };
       setSteps(newSteps);
       
-      // Update persistent history for this query
       saveHistoryItem(query, newSteps);
       setHistory(getHistory());
       
     } catch (e) {
       console.error("Regeneration failed", e);
-      // Fail silently or add UI error if needed
     } finally {
       setIsRegenerating(false);
     }
@@ -635,15 +651,18 @@ const App: React.FC = () => {
                   {/* Audio Button */}
                   <button
                     onClick={toggleSpeech}
-                    disabled={isExporting}
+                    disabled={isExporting || quotaExceeded}
                     className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-bold transition-all ${
                       isSpeaking 
                       ? 'bg-red-50 text-red-600 ring-2 ring-red-100' 
-                      : 'bg-stone-50 text-stone-500 hover:bg-stone-100'
+                      : quotaExceeded
+                        ? 'bg-stone-100 text-stone-400 cursor-not-allowed'
+                        : 'bg-stone-50 text-stone-500 hover:bg-stone-100'
                     }`}
+                    title={quotaExceeded ? "Audio disabled due to API limits" : "Read description"}
                   >
-                    {isSpeaking ? <StopCircle size={18} /> : isLoadingAudio ? <Loader2 size={18} className="animate-spin" /> : <Volume2 size={18} />}
-                    {isSpeaking ? 'Reading...' : isLoadingAudio ? 'Loading Audio...' : 'Replay Audio'}
+                    {isSpeaking ? <StopCircle size={18} /> : quotaExceeded ? <VolumeX size={18} /> : isLoadingAudio ? <Loader2 size={18} className="animate-spin" /> : <Volume2 size={18} />}
+                    {isSpeaking ? 'Reading...' : quotaExceeded ? 'Audio Limit' : isLoadingAudio ? 'Loading Audio...' : 'Replay Audio'}
                   </button>
 
                   {/* Regenerate Button */}

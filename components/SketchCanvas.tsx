@@ -23,7 +23,7 @@ const SketchCanvas = forwardRef<SketchCanvasHandle, SketchCanvasProps>(({
   const [error, setError] = useState<string | null>(null);
   
   // Store timeout IDs to cancel animations if component unmounts or updates
-  const timeoutsRef = useRef<NodeJS.Timeout[]>([]);
+  const timeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   // We move the main drawing logic into a function that can be called by useEffect AND replay
   const runAnimation = () => {

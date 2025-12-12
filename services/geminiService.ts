@@ -102,6 +102,25 @@ rc.rectangle(100, 200, 150, 50, { fill: 'rgba(255, 255, 0, 0.3)', fillStyle: 'so
 drawText(\`Active\`, 175, 225, { size: 16, color: '#b45309' });
 `;
 
+// --- HELPER: Retry Logic for Rate Limits ---
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+async function withRetry<T>(fn: () => Promise<T>, retries = 3, backoff = 2000): Promise<T> {
+  try {
+    return await fn();
+  } catch (error: any) {
+    const isRateLimit = error?.status === 429 || error?.code === 429 || error?.message?.includes('429');
+    const isServiceUnavailable = error?.status === 503 || error?.code === 503;
+    
+    if (retries > 0 && (isRateLimit || isServiceUnavailable)) {
+      console.warn(`API Rate limit or Service Unavailable. Retrying in ${backoff}ms... (Retries left: ${retries})`);
+      await delay(backoff);
+      return withRetry(fn, retries - 1, backoff * 2);
+    }
+    throw error;
+  }
+}
+
 export const generateSketchSteps = async (query: string): Promise<SketchResponse> => {
   try {
     const response = await ai.models.generateContent({
@@ -125,64 +144,68 @@ export const generateSketchSteps = async (query: string): Promise<SketchResponse
 };
 
 export const regenerateSingleStep = async (title: string, description: string): Promise<string> => {
-  try {
-    const SINGLE_STEP_SCHEMA: Schema = {
-      type: Type.OBJECT,
-      properties: {
-        code: {
-          type: Type.STRING,
-          description: "Executable JavaScript code using 'rc', 'drawArrow', 'drawCurve', and 'drawText'."
+  return withRetry(async () => {
+    try {
+      const SINGLE_STEP_SCHEMA: Schema = {
+        type: Type.OBJECT,
+        properties: {
+          code: {
+            type: Type.STRING,
+            description: "Executable JavaScript code using 'rc', 'drawArrow', 'drawCurve', and 'drawText'."
+          }
+        },
+        required: ["code"]
+      };
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: `Redraw the following step for a visual guide.
+        Title: ${title}
+        Description: ${description}
+        
+        Generate the Rough.js code to visualize this specific step.`,
+        config: {
+          systemInstruction: SYSTEM_PROMPT,
+          responseMimeType: "application/json",
+          responseSchema: SINGLE_STEP_SCHEMA,
         }
-      },
-      required: ["code"]
-    };
+      });
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: `Redraw the following step for a visual guide.
-      Title: ${title}
-      Description: ${description}
+      const text = response.text;
+      if (!text) throw new Error("No response from AI");
       
-      Generate the Rough.js code to visualize this specific step.`,
-      config: {
-        systemInstruction: SYSTEM_PROMPT,
-        responseMimeType: "application/json",
-        responseSchema: SINGLE_STEP_SCHEMA,
-      }
-    });
-
-    const text = response.text;
-    if (!text) throw new Error("No response from AI");
-    
-    const json = JSON.parse(text);
-    return json.code;
-  } catch (error) {
-    console.error("Gemini API Error (Regenerate):", error);
-    throw error;
-  }
+      const json = JSON.parse(text);
+      return json.code;
+    } catch (error) {
+      console.error("Gemini API Error (Regenerate):", error);
+      throw error;
+    }
+  });
 };
 
 export const generateSpeech = async (text: string): Promise<string> => {
-  try {
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash-preview-tts",
-      contents: [{ parts: [{ text }] }],
-      config: {
-        responseModalities: [Modality.AUDIO],
-        speechConfig: {
-          voiceConfig: {
-            prebuiltVoiceConfig: { voiceName: 'Kore' },
+  return withRetry(async () => {
+    try {
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash-preview-tts",
+        contents: [{ parts: [{ text }] }],
+        config: {
+          responseModalities: [Modality.AUDIO],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: { voiceName: 'Kore' },
+            },
           },
         },
-      },
-    });
-    
-    const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-    if (!base64Audio) throw new Error("No audio data generated");
-    
-    return base64Audio;
-  } catch (error) {
-     console.error("TTS Error", error);
-     throw error;
-  }
+      });
+      
+      const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+      if (!base64Audio) throw new Error("No audio data generated");
+      
+      return base64Audio;
+    } catch (error) {
+       console.error("TTS Error", error);
+       throw error;
+    }
+  }, 2, 2000); // 2 retries starting with 2s backoff
 };
