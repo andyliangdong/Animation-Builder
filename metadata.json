@@ -1,0 +1,5 @@
+{
+  "name": "AI Sketchy",
+  "description": "An AI-powered visual explainer that breaks down complex questions into hand-drawn, step-by-step sketched storyboards using Gemini and Rough.js.",
+  "requestFramePermissions": []
+}
