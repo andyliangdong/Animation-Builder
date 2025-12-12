@@ -124,6 +124,44 @@ export const generateSketchSteps = async (query: string): Promise<SketchResponse
   }
 };
 
+export const regenerateSingleStep = async (title: string, description: string): Promise<string> => {
+  try {
+    const SINGLE_STEP_SCHEMA: Schema = {
+      type: Type.OBJECT,
+      properties: {
+        code: {
+          type: Type.STRING,
+          description: "Executable JavaScript code using 'rc', 'drawArrow', 'drawCurve', and 'drawText'."
+        }
+      },
+      required: ["code"]
+    };
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: `Redraw the following step for a visual guide.
+      Title: ${title}
+      Description: ${description}
+      
+      Generate the Rough.js code to visualize this specific step.`,
+      config: {
+        systemInstruction: SYSTEM_PROMPT,
+        responseMimeType: "application/json",
+        responseSchema: SINGLE_STEP_SCHEMA,
+      }
+    });
+
+    const text = response.text;
+    if (!text) throw new Error("No response from AI");
+    
+    const json = JSON.parse(text);
+    return json.code;
+  } catch (error) {
+    console.error("Gemini API Error (Regenerate):", error);
+    throw error;
+  }
+};
+
 export const generateSpeech = async (text: string): Promise<string> => {
   try {
     const response = await ai.models.generateContent({

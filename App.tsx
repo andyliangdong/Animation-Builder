@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Pencil, Search, Loader2, Volume2, StopCircle, History, Trash2, ChevronRight, Video, Download } from 'lucide-react';
-import { generateSketchSteps, generateSpeech } from './services/geminiService';
+import { Pencil, Search, Loader2, Volume2, StopCircle, History, Trash2, ChevronRight, Video, Download, RefreshCw } from 'lucide-react';
+import { generateSketchSteps, generateSpeech, regenerateSingleStep } from './services/geminiService';
 import { getHistory, saveHistoryItem, deleteHistoryItem } from './services/storageService';
 import { base64ToBytes, pcmToAudioBuffer } from './utils/audio';
 import SketchCanvas, { SketchCanvasHandle } from './components/SketchCanvas';
@@ -21,6 +21,9 @@ const App: React.FC = () => {
   // Export State
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState('');
+  
+  // Regeneration State
+  const [isRegenerating, setIsRegenerating] = useState(false);
   
   // History Dropdown State
   const [showDropdown, setShowDropdown] = useState(false);
@@ -370,6 +373,34 @@ const App: React.FC = () => {
     setHistory(getHistory());
   };
 
+  // --- Regenerate Logic ---
+
+  const reGenerateSketch = async () => {
+    const currentStepData = steps[currentStepIndex];
+    if (!currentStepData || isRegenerating || isExporting) return;
+    
+    stopSpeaking();
+    setIsRegenerating(true);
+    try {
+      const newCode = await regenerateSingleStep(currentStepData.title, currentStepData.description);
+      
+      // Update local state
+      const newSteps = [...steps];
+      newSteps[currentStepIndex] = { ...currentStepData, code: newCode };
+      setSteps(newSteps);
+      
+      // Update persistent history for this query
+      saveHistoryItem(query, newSteps);
+      setHistory(getHistory());
+      
+    } catch (e) {
+      console.error("Regeneration failed", e);
+      // Fail silently or add UI error if needed
+    } finally {
+      setIsRegenerating(false);
+    }
+  };
+
   const isIdle = appState === AppState.IDLE;
   const isSuccess = appState === AppState.SUCCESS;
   const isLoading = appState === AppState.LOADING;
@@ -613,6 +644,19 @@ const App: React.FC = () => {
                   >
                     {isSpeaking ? <StopCircle size={18} /> : isLoadingAudio ? <Loader2 size={18} className="animate-spin" /> : <Volume2 size={18} />}
                     {isSpeaking ? 'Reading...' : isLoadingAudio ? 'Loading Audio...' : 'Replay Audio'}
+                  </button>
+
+                  {/* Regenerate Button */}
+                  <button
+                    onClick={reGenerateSketch}
+                    disabled={isRegenerating || isExporting}
+                    className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-bold transition-all bg-stone-50 text-stone-500 hover:bg-stone-100 border border-stone-200 ${
+                        isRegenerating ? 'opacity-80 cursor-wait' : ''
+                    }`}
+                    title="Regenerate this specific sketch if it looks wrong"
+                  >
+                    <RefreshCw size={18} className={isRegenerating ? "animate-spin" : ""} />
+                    {isRegenerating ? 'Redrawing...' : 'Regenerate Sketch'}
                   </button>
                 </div>
               </div>
