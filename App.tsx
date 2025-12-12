@@ -22,6 +22,8 @@ const App: React.FC = () => {
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState('');
   
+  // History Dropdown State
+  const [showDropdown, setShowDropdown] = useState(false);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   
   const canvasRef = useRef<SketchCanvasHandle>(null);
@@ -30,6 +32,7 @@ const App: React.FC = () => {
   const audioContextRef = useRef<AudioContext | null>(null);
   const activeSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const audioCacheRef = useRef<Map<number, AudioBuffer>>(new Map()); // Cache for Gemini TTS buffers
+  const audioLoadingPromisesRef = useRef<Map<number, Promise<AudioBuffer>>>(new Map()); // Track in-flight requests
 
   // Export References
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -58,6 +61,48 @@ const App: React.FC = () => {
     setIsSpeaking(false);
   }, []);
 
+  // Core function to load audio (checks cache -> checks in-flight -> generates)
+  const ensureAudioLoaded = useCallback(async (index: number): Promise<AudioBuffer> => {
+    const step = steps[index];
+    if (!step) throw new Error("Step not found");
+
+    // 1. Check Cache
+    if (audioCacheRef.current.has(index)) {
+      return audioCacheRef.current.get(index)!;
+    }
+
+    // 2. Check In-Flight Promise (deduplicate requests)
+    if (audioLoadingPromisesRef.current.has(index)) {
+      return audioLoadingPromisesRef.current.get(index)!;
+    }
+
+    // 3. Generate New
+    const promise = (async () => {
+      try {
+        const text = `${step.title}. ${step.description}`;
+        const b64 = await generateSpeech(text);
+        
+        // We need the context to decode, but we don't want to suspend/resume here unnecessarily
+        // just to decode. Decoding usually works fine on a suspended context.
+        const ctx = getAudioContext(); 
+        const bytes = base64ToBytes(b64);
+        const buffer = pcmToAudioBuffer(bytes, ctx);
+        
+        audioCacheRef.current.set(index, buffer);
+        return buffer;
+      } catch (e) {
+        console.error(`Failed to load audio for step ${index}`, e);
+        throw e;
+      } finally {
+        // Remove from promise map so if it failed we can try again later
+        audioLoadingPromisesRef.current.delete(index);
+      }
+    })();
+
+    audioLoadingPromisesRef.current.set(index, promise);
+    return promise;
+  }, [steps, getAudioContext]);
+
   const playAudioForStep = useCallback(async (index: number) => {
     const step = steps[index];
     if (!step) return;
@@ -65,23 +110,20 @@ const App: React.FC = () => {
     stopSpeaking();
 
     try {
+      // Optimistically set loading if not cached
+      if (!audioCacheRef.current.has(index)) {
+        setIsLoadingAudio(true);
+      }
+
       const ctx = getAudioContext();
       // Resume context if suspended (browser requirement)
       if (ctx.state === 'suspended') {
         await ctx.resume();
       }
 
-      let buffer = audioCacheRef.current.get(index);
-
-      if (!buffer) {
-        setIsLoadingAudio(true);
-        const text = `${step.title}. ${step.description}`;
-        const b64 = await generateSpeech(text);
-        const bytes = base64ToBytes(b64);
-        buffer = pcmToAudioBuffer(bytes, ctx);
-        audioCacheRef.current.set(index, buffer);
-        setIsLoadingAudio(false);
-      }
+      // Fetch or get from cache/promise
+      const buffer = await ensureAudioLoaded(index);
+      setIsLoadingAudio(false);
 
       const source = ctx.createBufferSource();
       source.buffer = buffer;
@@ -101,7 +143,7 @@ const App: React.FC = () => {
       setIsLoadingAudio(false);
       setIsSpeaking(false);
     }
-  }, [steps, getAudioContext, stopSpeaking]);
+  }, [steps, getAudioContext, stopSpeaking, ensureAudioLoaded]);
 
   const toggleSpeech = () => {
     if (isSpeaking) {
@@ -120,6 +162,23 @@ const App: React.FC = () => {
       }
     };
   }, [stopSpeaking]);
+
+  // --- Pre-fetch Logic ---
+  useEffect(() => {
+    if (appState === AppState.SUCCESS && steps.length > 0) {
+      // Pre-fetch the next 2 steps
+      const nextIndex = currentStepIndex + 1;
+      const nextNextIndex = currentStepIndex + 2;
+
+      if (nextIndex < steps.length) {
+        ensureAudioLoaded(nextIndex).catch(() => {}); // catch to prevent unhandled rejection
+      }
+      if (nextNextIndex < steps.length) {
+         ensureAudioLoaded(nextNextIndex).catch(() => {});
+      }
+    }
+  }, [currentStepIndex, appState, steps, ensureAudioLoaded]);
+
 
   // --- Auto Play Logic ---
 
@@ -154,12 +213,7 @@ const App: React.FC = () => {
       for (let i = 0; i < steps.length; i++) {
         if (!audioCacheRef.current.has(i)) {
           setExportProgress(`Generating Audio (${i + 1}/${steps.length})...`);
-          const step = steps[i];
-          const text = `${step.title}. ${step.description}`;
-          const b64 = await generateSpeech(text);
-          const bytes = base64ToBytes(b64);
-          const buffer = pcmToAudioBuffer(bytes, ctx);
-          audioCacheRef.current.set(i, buffer);
+          await ensureAudioLoaded(i);
         }
       }
 
@@ -259,6 +313,10 @@ const App: React.FC = () => {
     stopSpeaking();
     // Clear audio cache on new search
     audioCacheRef.current.clear();
+    audioLoadingPromisesRef.current.clear();
+    
+    // Close dropdown
+    setShowDropdown(false);
     
     setAppState(AppState.LOADING);
     setSteps([]);
@@ -286,6 +344,7 @@ const App: React.FC = () => {
   const loadHistoryItem = (item: HistoryItem) => {
     stopSpeaking();
     audioCacheRef.current.clear();
+    audioLoadingPromisesRef.current.clear();
     
     setQuery(item.query);
     setSteps(item.steps);
@@ -325,25 +384,62 @@ const App: React.FC = () => {
 
           {!isIdle && (
             <div className="flex-1 flex items-center justify-end gap-3 max-w-3xl">
-               <form onSubmit={handleSearch} className="relative w-full max-w-md">
-                 <input
-                   type="text"
-                   value={query}
-                   onChange={(e) => setQuery(e.target.value)}
-                   className="w-full pl-4 pr-10 py-2 rounded-full border border-stone-300 bg-stone-50 focus:bg-white focus:border-stone-800 focus:ring-2 focus:ring-stone-100 outline-none transition-all text-sm"
-                   disabled={isLoading || isExporting}
-                 />
-                 <button type="submit" disabled={isExporting} className="absolute right-2 top-1.5 text-stone-400 hover:text-stone-800">
-                    <Search size={16} />
-                 </button>
-               </form>
+               
+               {/* Search Bar with History Dropdown */}
+               <div className="relative w-full max-w-md z-30">
+                 <form onSubmit={handleSearch} className="relative w-full">
+                   <input
+                     type="text"
+                     value={query}
+                     onFocus={() => setShowDropdown(true)}
+                     onBlur={() => setTimeout(() => setShowDropdown(false), 200)}
+                     onChange={(e) => setQuery(e.target.value)}
+                     className="w-full h-10 pl-4 pr-10 rounded-full border border-stone-300 bg-stone-50 focus:bg-white focus:border-stone-800 focus:ring-2 focus:ring-stone-100 outline-none transition-all text-sm"
+                     disabled={isLoading || isExporting}
+                     placeholder="Ask another question..."
+                   />
+                   <button type="submit" disabled={isExporting} className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-800">
+                      <Search size={16} />
+                   </button>
+                 </form>
+
+                 {/* History Dropdown */}
+                 {showDropdown && (
+                   <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-xl border border-stone-200 shadow-xl overflow-hidden max-h-[400px] overflow-y-auto animate-in fade-in slide-in-from-top-2 duration-200">
+                      {history.filter(h => !query || h.query.toLowerCase().includes(query.toLowerCase())).length > 0 ? (
+                        history.filter(h => !query || h.query.toLowerCase().includes(query.toLowerCase())).map(h => (
+                          <div 
+                              key={h.id}
+                              onMouseDown={() => {
+                                loadHistoryItem(h);
+                                setShowDropdown(false);
+                              }}
+                              className="px-4 py-3 hover:bg-stone-50 cursor-pointer border-b border-stone-100 last:border-0 flex items-center justify-between group transition-colors"
+                          >
+                              <div className="flex items-center gap-3 overflow-hidden">
+                                <History size={14} className="text-stone-300 group-hover:text-stone-500 shrink-0" />
+                                <span className="text-sm font-medium text-stone-700 truncate group-hover:text-stone-900">{h.query}</span>
+                              </div>
+                              <span className="text-xs text-stone-400 shrink-0">
+                                  {new Date(h.timestamp).toLocaleDateString()}
+                              </span>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="px-4 py-4 text-center text-stone-400 text-sm italic">
+                          {history.length === 0 ? "No search history yet" : "No matches found"}
+                        </div>
+                      )}
+                   </div>
+                 )}
+               </div>
 
                {/* GLOBAL EXPORT BUTTON */}
                {isSuccess && (
                  <button
                     onClick={handleExportVideo}
                     disabled={isExporting}
-                    className={`shrink-0 flex items-center gap-2 px-4 py-2 rounded-full text-sm font-bold transition-all border ${
+                    className={`shrink-0 h-10 flex items-center gap-2 px-4 rounded-full text-sm font-bold transition-all border ${
                       isExporting
                       ? 'bg-blue-50 text-blue-600 border-blue-200 cursor-not-allowed'
                       : 'bg-stone-900 text-white border-stone-900 hover:bg-stone-800 hover:scale-105 active:scale-95 shadow-md'
