@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useImperativeHandle, forwardRef } from 'react';
 import rough from 'roughjs';
 
 interface SketchCanvasProps {
@@ -8,19 +8,25 @@ interface SketchCanvasProps {
   className?: string;
 }
 
-const SketchCanvas: React.FC<SketchCanvasProps> = ({ 
+export interface SketchCanvasHandle {
+  replay: () => void;
+  getCanvas: () => HTMLCanvasElement | null;
+}
+
+const SketchCanvas = forwardRef<SketchCanvasHandle, SketchCanvasProps>(({ 
   code, 
   width = 800, 
   height = 600,
   className = ''
-}) => {
+}, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [error, setError] = useState<string | null>(null);
   
   // Store timeout IDs to cancel animations if component unmounts or updates
   const timeoutsRef = useRef<NodeJS.Timeout[]>([]);
 
-  useEffect(() => {
+  // We move the main drawing logic into a function that can be called by useEffect AND replay
+  const runAnimation = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -42,7 +48,6 @@ const SketchCanvas: React.FC<SketchCanvasProps> = ({
     };
 
     // --- Proxied Tools ---
-
     // Proxy 'rc' to capture method calls
     const rcProxy = new Proxy(rc, {
       get(target: any, prop: string | symbol) {
@@ -77,36 +82,24 @@ const SketchCanvas: React.FC<SketchCanvasProps> = ({
       addToQueue(() => {
          const { color = '#1c1917', strokeWidth = 2, arrow = false, arrowSize = 20 } = options;
          
-         // Calculate control point
          const midX = (x1 + x2) / 2;
          const midY = (y1 + y2) / 2;
-         
-         // Vector perpendicular to line
          const dx = x2 - x1;
          const dy = y2 - y1;
          const len = Math.sqrt(dx * dx + dy * dy);
          const udx = -dy / len;
          const udy = dx / len;
-
          const cx = midX + udx * offset;
          const cy = midY + udy * offset;
-
-         // Draw quadratic curve
          const path = `M${x1} ${y1} Q${cx} ${cy} ${x2} ${y2}`;
          rc.path(path, { stroke: color, strokeWidth, roughness: 2 });
 
          if (arrow) {
-            // Calculate derivative at t=1 for arrow angle
-            // Bezier: B(t) = (1-t)^2 P0 + 2(1-t)t P1 + t^2 P2
-            // B'(t) = 2(1-t)(P1-P0) + 2t(P2-P1)
-            // at t=1: 2(P2-P1)
             const angle = Math.atan2(y2 - cy, x2 - cx);
-
             const x3 = x2 - arrowSize * Math.cos(angle - Math.PI / 6);
             const y3 = y2 - arrowSize * Math.sin(angle - Math.PI / 6);
             const x4 = x2 - arrowSize * Math.cos(angle + Math.PI / 6);
             const y4 = y2 - arrowSize * Math.sin(angle + Math.PI / 6);
-
             rc.line(x2, y2, x3, y3, { stroke: color, strokeWidth, roughness: 2 });
             rc.line(x2, y2, x4, y4, { stroke: color, strokeWidth, roughness: 2 });
          }
@@ -116,26 +109,21 @@ const SketchCanvas: React.FC<SketchCanvasProps> = ({
     const drawText = (text: string, x: number, y: number, options: any = {}) => {
       addToQueue(() => {
         ctx.save();
-        // Default font size reduced to 24 for better fit
         const fontSize = options.size || options.fontSize || 24;
         ctx.font = `bold ${fontSize}px 'Patrick Hand', cursive`;
         ctx.fillStyle = options.color || "#1c1917";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        
-        // Add white shadow/halo to ensure text is visible even if background color is close or slightly overlapping
         ctx.shadowColor = "rgba(255, 255, 255, 0.8)";
         ctx.shadowBlur = 4;
         ctx.shadowOffsetX = 0;
         ctx.shadowOffsetY = 0;
         
-        // Handle both actual newlines (from backticks) and literal "\n" sequences
         const lines = String(text).split(/\r?\n|\\n/);
         const lineHeight = fontSize * 1.2; 
         const startY = y - ((lines.length - 1) * lineHeight) / 2;
 
         lines.forEach((line: string, i: number) => {
-          // Double draw to strengthen opacity and halo
           ctx.fillText(line, x, startY + (i * lineHeight));
           ctx.fillText(line, x, startY + (i * lineHeight));
         });
@@ -146,18 +134,15 @@ const SketchCanvas: React.FC<SketchCanvasProps> = ({
     try {
       setError(null);
       // Execute the code to populate commandQueue
-      // We pass the proxy 'rcProxy' instead of real 'rc'
       // eslint-disable-next-line no-new-func
       const drawFunction = new Function('rc', 'ctx', 'width', 'height', 'drawArrow', 'drawCurve', 'drawText', code);
       drawFunction(rcProxy, ctx, width, height, drawArrow, drawCurve, drawText);
 
       // Playback Animation (Staggered)
-      // Instead of waiting for one to finish, we schedule them all with increasing delays
-      const STAGGER_DELAY = 200; // ms between each stroke starting
+      const STAGGER_DELAY = 200; 
 
       commandQueue.forEach((command, index) => {
         const id = setTimeout(() => {
-          // Use requestAnimationFrame to ensure we paint on a frame boundary
           requestAnimationFrame(() => {
              try {
                 command();
@@ -172,17 +157,27 @@ const SketchCanvas: React.FC<SketchCanvasProps> = ({
 
     } catch (err) {
       console.error("Failed to execute sketch code:", err);
-      console.log("Faulty Code Block:\n", code); // Log the code for debugging
       setError("Could not draw this step.");
-      
       drawText("Oops! Drawing Error.", width/2, height/2, { color: '#ef4444', size: 40 });
     }
+  };
 
+  useEffect(() => {
+    runAnimation();
     return () => {
       timeoutsRef.current.forEach(clearTimeout);
     };
-
   }, [code, width, height]);
+
+  // Expose methods to parent
+  useImperativeHandle(ref, () => ({
+    replay: () => {
+      runAnimation();
+    },
+    getCanvas: () => {
+      return canvasRef.current;
+    }
+  }));
 
   return (
     <div className={`relative bg-white rounded-xl overflow-hidden border-4 border-stone-900 shadow-xl ${className}`}>
@@ -202,6 +197,6 @@ const SketchCanvas: React.FC<SketchCanvasProps> = ({
       </div>
     </div>
   );
-};
+});
 
 export default SketchCanvas;

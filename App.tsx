@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Pencil, Search, Loader2, Volume2, StopCircle, History, Trash2, ChevronRight } from 'lucide-react';
-import { generateSketchSteps } from './services/geminiService';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Pencil, Search, Loader2, Volume2, StopCircle, History, Trash2, ChevronRight, Video, Download } from 'lucide-react';
+import { generateSketchSteps, generateSpeech } from './services/geminiService';
 import { getHistory, saveHistoryItem, deleteHistoryItem } from './services/storageService';
-import SketchCanvas from './components/SketchCanvas';
+import { base64ToBytes, pcmToAudioBuffer } from './utils/audio';
+import SketchCanvas, { SketchCanvasHandle } from './components/SketchCanvas';
 import StepControls from './components/StepControls';
 import { SketchStep, AppState, HistoryItem } from './types';
 
@@ -13,21 +14,31 @@ const App: React.FC = () => {
   const [currentStepIndex, setCurrentStepIndex] = useState(0);
   const [errorMsg, setErrorMsg] = useState('');
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState('');
   const [history, setHistory] = useState<HistoryItem[]>([]);
+  
+  const canvasRef = useRef<SketchCanvasHandle>(null);
+
+  // Refs for export process
+  const exportCtxRef = useRef<AudioContext | null>(null);
+  const exportDestRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioBuffersRef = useRef<AudioBuffer[]>([]);
+  const chunksRef = useRef<Blob[]>([]);
 
   // Load history on mount
   useEffect(() => {
     setHistory(getHistory());
   }, []);
 
-  // --- Speech Logic ---
+  // --- Speech Logic (Standard) ---
 
   const speak = useCallback((text: string) => {
     window.speechSynthesis.cancel();
     
     const utterance = new SpeechSynthesisUtterance(text);
     const voices = window.speechSynthesis.getVoices();
-    // Try to find a nice English voice
     const preferredVoice = voices.find(v => v.lang.startsWith('en') && v.name.includes('Google')) || 
                            voices.find(v => v.lang.startsWith('en'));
     if (preferredVoice) utterance.voice = preferredVoice;
@@ -56,25 +67,159 @@ const App: React.FC = () => {
 
   // Cleanup on unmount
   useEffect(() => {
-    return () => stopSpeaking();
+    return () => {
+      stopSpeaking();
+      if (exportCtxRef.current) exportCtxRef.current.close();
+    };
   }, [stopSpeaking]);
 
-  // --- Auto Play & State Effects ---
+  // --- Auto Play (when not exporting) ---
 
   const currentStepData = steps[currentStepIndex];
 
-  // Auto-play audio when step changes or when we first load success state
   useEffect(() => {
-    if (appState === AppState.SUCCESS && currentStepData) {
-      // Small timeout to ensure smoother transition visually before audio starts
+    if (appState === AppState.SUCCESS && currentStepData && !isExporting) {
       const timer = setTimeout(() => {
         speak(`${currentStepData.title}. ${currentStepData.description}`);
       }, 500);
       return () => clearTimeout(timer);
-    } else {
+    } else if (!isExporting) {
       stopSpeaking();
     }
-  }, [currentStepIndex, appState, currentStepData, speak, stopSpeaking]);
+  }, [currentStepIndex, appState, currentStepData, speak, stopSpeaking, isExporting]);
+
+
+  // --- Export Video Logic (All Steps) ---
+
+  const handleExportVideo = async () => {
+    if (steps.length === 0 || isExporting) return;
+    
+    stopSpeaking();
+    setIsExporting(true);
+    setExportProgress('Preparing Audio...');
+
+    try {
+      // 1. Initialize Audio Context & Recorder
+      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)({sampleRate: 24000});
+      exportCtxRef.current = ctx;
+      
+      const dest = ctx.createMediaStreamDestination();
+      exportDestRef.current = dest;
+
+      // 2. Pre-generate ALL audio buffers
+      const buffers: AudioBuffer[] = [];
+      for (let i = 0; i < steps.length; i++) {
+        setExportProgress(`Generating Audio (${i + 1}/${steps.length})...`);
+        const step = steps[i];
+        const text = `${step.title}. ${step.description}`;
+        const b64 = await generateSpeech(text);
+        const bytes = base64ToBytes(b64);
+        const buffer = pcmToAudioBuffer(bytes, ctx);
+        buffers.push(buffer);
+      }
+      audioBuffersRef.current = buffers;
+
+      // 3. Setup MediaRecorder with Canvas Stream
+      setExportProgress('Starting Recording...');
+      const canvasElement = canvasRef.current?.getCanvas();
+      if (!canvasElement) throw new Error("Canvas not found");
+      
+      const canvasStream = canvasElement.captureStream(30);
+      const combinedStream = new MediaStream([
+        ...canvasStream.getVideoTracks(),
+        ...dest.stream.getAudioTracks()
+      ]);
+
+      const recorder = new MediaRecorder(combinedStream, { mimeType: 'video/webm; codecs=vp9' });
+      chunksRef.current = [];
+      
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunksRef.current.push(e.data);
+      };
+
+      recorder.onstop = () => {
+        const blob = new Blob(chunksRef.current, { type: 'video/webm' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `sketchy-full-guide.webm`;
+        a.click();
+        URL.revokeObjectURL(url);
+        
+        setIsExporting(false);
+        setExportProgress('');
+        if (exportCtxRef.current) {
+            exportCtxRef.current.close();
+            exportCtxRef.current = null;
+        }
+      };
+
+      mediaRecorderRef.current = recorder;
+      recorder.start();
+
+      // 4. Start the Sequence at Step 0
+      // We explicitly set index to 0. The useEffect below handles the playback logic.
+      if (currentStepIndex !== 0) {
+        setCurrentStepIndex(0);
+      } else {
+        // Force trigger if we are already at 0
+        playExportStep(0);
+      }
+
+    } catch (err) {
+      console.error("Export failed", err);
+      setIsExporting(false);
+      setExportProgress('');
+      alert("Failed to export video. Please try again.");
+    }
+  };
+
+  const playExportStep = (index: number) => {
+    const ctx = exportCtxRef.current;
+    const dest = exportDestRef.current;
+    const buffer = audioBuffersRef.current[index];
+
+    if (!ctx || !dest || !buffer) return;
+
+    setExportProgress(`Recording Step ${index + 1}/${steps.length}...`);
+
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(dest);
+    source.connect(ctx.destination); // Play on speakers too
+
+    source.onended = () => {
+      if (index < steps.length - 1) {
+        // Move to next step after a short pause
+        setTimeout(() => {
+          setCurrentStepIndex(index + 1);
+        }, 800);
+      } else {
+        // Finish recording after a short tail
+        setTimeout(() => {
+          mediaRecorderRef.current?.stop();
+        }, 1000);
+      }
+    };
+
+    // Force canvas replay to sync with audio start
+    // Note: If 'currentStepIndex' just changed, the canvas is already replaying via its own useEffect.
+    // If we call replay() here, it might restart it. 
+    // Optimization: Only manual replay if needed, but since we just changed index, it should be fine.
+    // However, if we are at step 0 and triggered manually, we might want to replay.
+    canvasRef.current?.replay();
+    
+    source.start(0);
+  };
+
+  // Watch for step changes during export to trigger playback
+  useEffect(() => {
+    if (isExporting && audioBuffersRef.current.length > 0) {
+      playExportStep(currentStepIndex);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentStepIndex, isExporting]); 
+  // We exclude playExportStep from deps to avoid infinite loops, relying on index change.
 
 
   // --- Search Logic ---
@@ -94,7 +239,6 @@ const App: React.FC = () => {
       if (data.steps && data.steps.length > 0) {
         setSteps(data.steps);
         setAppState(AppState.SUCCESS);
-        // Auto Save to history
         const updatedHistory = saveHistoryItem(query, data.steps);
         setHistory(updatedHistory);
       } else {
@@ -134,7 +278,7 @@ const App: React.FC = () => {
         <div className="max-w-screen-2xl mx-auto px-6 py-3 flex items-center justify-between">
           <div 
             className="flex items-center gap-3 cursor-pointer group" 
-            onClick={() => { stopSpeaking(); setAppState(AppState.IDLE); setQuery(''); }}
+            onClick={() => { if(!isExporting) { stopSpeaking(); setAppState(AppState.IDLE); setQuery(''); } }}
           >
             <div className="bg-stone-900 text-white p-2 rounded-lg shadow-sm group-hover:scale-105 transition-transform">
               <Pencil size={20} />
@@ -144,7 +288,6 @@ const App: React.FC = () => {
             </h1>
           </div>
 
-          {/* Mini Search Bar in Header (Visible when in Success/Loading state) */}
           {!isIdle && (
             <div className="flex-1 max-w-xl mx-8 hidden md:block">
                <form onSubmit={handleSearch} className="relative">
@@ -153,9 +296,9 @@ const App: React.FC = () => {
                    value={query}
                    onChange={(e) => setQuery(e.target.value)}
                    className="w-full pl-4 pr-10 py-2 rounded-full border border-stone-300 bg-stone-50 focus:bg-white focus:border-stone-800 focus:ring-2 focus:ring-stone-100 outline-none transition-all text-sm"
-                   disabled={isLoading}
+                   disabled={isLoading || isExporting}
                  />
-                 <button type="submit" className="absolute right-2 top-1.5 text-stone-400 hover:text-stone-800">
+                 <button type="submit" disabled={isExporting} className="absolute right-2 top-1.5 text-stone-400 hover:text-stone-800">
                     <Search size={16} />
                  </button>
                </form>
@@ -167,7 +310,7 @@ const App: React.FC = () => {
       {/* Main Content */}
       <main className="flex-1 relative w-full h-full overflow-hidden">
         
-        {/* IDLE STATE: Centered Search + History */}
+        {/* IDLE STATE */}
         {isIdle && (
           <div className="absolute inset-0 overflow-y-auto">
             <div className="flex flex-col items-center justify-center p-4 min-h-full pt-20 pb-20">
@@ -192,7 +335,6 @@ const App: React.FC = () => {
                 </button>
               </form>
 
-              {/* Recent Sketches Grid */}
               {history.length > 0 && (
                 <div className="w-full max-w-4xl mt-16 animate-in fade-in slide-in-from-bottom-8 duration-700 delay-100">
                   <div className="flex items-center gap-2 mb-6 text-stone-400 font-bold tracking-wider text-sm uppercase">
@@ -262,14 +404,15 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* SUCCESS STATE: Split View Dashboard */}
+        {/* SUCCESS STATE */}
         {isSuccess && currentStepData && (
           <div className="w-full h-full flex flex-col lg:flex-row animate-in fade-in slide-in-from-bottom-4 duration-700">
             
-            {/* LEFT PANEL: Canvas (Takes priority) */}
+            {/* LEFT PANEL: Canvas */}
             <div className="flex-1 bg-stone-100 p-4 lg:p-8 flex items-center justify-center relative overflow-hidden">
               <div className="w-full h-full max-w-[1200px] flex items-center justify-center">
                  <SketchCanvas 
+                    ref={canvasRef}
                     code={currentStepData.code} 
                     width={800} 
                     height={600} 
@@ -278,51 +421,66 @@ const App: React.FC = () => {
               </div>
             </div>
 
-            {/* RIGHT PANEL: Sidebar for Info & Controls */}
+            {/* RIGHT PANEL: Sidebar */}
             <div className="shrink-0 w-full lg:w-[400px] xl:w-[450px] bg-white border-l border-stone-200 flex flex-col z-10 shadow-[-10px_0_20px_-10px_rgba(0,0,0,0.05)]">
               
-              {/* Content Area (Scrollable) */}
+              {/* Content Area */}
               <div className="flex-1 overflow-y-auto p-6 lg:p-8">
                 
-                {/* Step Indicator */}
                 <div className="inline-block px-3 py-1 bg-stone-100 rounded-full text-xs font-bold text-stone-500 tracking-wider mb-6 border border-stone-200">
                   STEP {currentStepIndex + 1} OF {steps.length}
                 </div>
 
-                {/* Title (Reduced size) */}
                 <div className="flex items-start gap-4 mb-6">
                   <h2 className="hand-font text-3xl lg:text-4xl font-bold text-stone-800 leading-[1.1]">
                     {currentStepData.title}
                   </h2>
                 </div>
 
-                {/* Description */}
                 <div className="prose prose-stone prose-lg leading-relaxed text-stone-600">
                   <p>{currentStepData.description}</p>
                 </div>
 
-                {/* Audio Button (Status) */}
-                <button
-                  onClick={toggleSpeech}
-                  className={`mt-6 flex items-center gap-2 px-4 py-2 rounded-full text-sm font-bold transition-all ${
-                    isSpeaking 
-                    ? 'bg-red-50 text-red-600 ring-2 ring-red-100' 
-                    : 'bg-stone-50 text-stone-500 hover:bg-stone-100'
-                  }`}
-                >
-                  {isSpeaking ? <StopCircle size={18} /> : <Volume2 size={18} />}
-                  {isSpeaking ? 'Reading...' : 'Replay Audio'}
-                </button>
+                <div className="flex flex-wrap gap-3 mt-6">
+                  {/* Audio Button */}
+                  <button
+                    onClick={toggleSpeech}
+                    disabled={isExporting}
+                    className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-bold transition-all ${
+                      isSpeaking 
+                      ? 'bg-red-50 text-red-600 ring-2 ring-red-100' 
+                      : 'bg-stone-50 text-stone-500 hover:bg-stone-100'
+                    }`}
+                  >
+                    {isSpeaking ? <StopCircle size={18} /> : <Volume2 size={18} />}
+                    {isSpeaking ? 'Reading...' : 'Replay Audio'}
+                  </button>
+
+                  {/* Export Button */}
+                  <button
+                    onClick={handleExportVideo}
+                    disabled={isExporting}
+                    className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-bold transition-all border border-stone-200 ${
+                      isExporting
+                      ? 'bg-blue-50 text-blue-600 ring-2 ring-blue-100 cursor-not-allowed'
+                      : 'bg-white text-stone-600 hover:bg-stone-50 hover:text-stone-900 hover:border-stone-300'
+                    }`}
+                  >
+                    {isExporting ? <Loader2 size={18} className="animate-spin" /> : <Video size={18} />}
+                    {isExporting ? exportProgress || 'Exporting...' : 'Export Video'}
+                  </button>
+                </div>
               </div>
 
-              {/* Footer Controls (Fixed at bottom of sidebar) */}
+              {/* Footer Controls */}
               <div className="p-6 border-t border-stone-100 bg-stone-50/50">
                 <StepControls 
                   currentStep={currentStepIndex}
                   totalSteps={steps.length}
-                  onNext={() => setCurrentStepIndex(p => Math.min(steps.length - 1, p + 1))}
-                  onPrev={() => setCurrentStepIndex(p => Math.max(0, p - 1))}
+                  onNext={() => !isExporting && setCurrentStepIndex(p => Math.min(steps.length - 1, p + 1))}
+                  onPrev={() => !isExporting && setCurrentStepIndex(p => Math.max(0, p - 1))}
                   onReset={() => {
+                    if (isExporting) return;
                     stopSpeaking();
                     setAppState(AppState.IDLE);
                     setQuery('');
