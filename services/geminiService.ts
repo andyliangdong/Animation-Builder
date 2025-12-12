@@ -61,34 +61,37 @@ Write code in the order it should appear (e.g., Draw Node A -> Draw Node B -> Dr
    - CORRECT: \`drawText(\`User's Data\`, 100, 100)\`
    - INCORRECT: \`drawText("User's Data", 100, 100)\` (Syntax Error)
 
-2. **Prevent Overcrowding (SPLIT STEPS)**:
+2. **Layering & Visibility (CRITICAL)**:
+   - **Text is Priority**: Text must always be legible.
+   - **Background First**: ALWAYS draw container shapes (boxes, circles) **BEFORE** drawing the text inside them.
+   - **Highlighters**: If you are drawing a shape *over* existing text to highlight it (like in a matrix step), you **MUST** use a **transparent RGBA color** for the fill.
+     - **Good Highlight**: \`fill: 'rgba(255, 215, 0, 0.3)'\` (Yellow transparent), \`fill: 'rgba(100, 149, 237, 0.3)'\` (Blue transparent).
+     - **Bad Highlight**: \`fill: '#FFD700'\` (Solid opaque - WILL HIDE TEXT).
+   - **No Intersection**: Do not draw lines through text.
+
+3. **Prevent Overcrowding (SPLIT STEPS)**:
    - **Rule**: If a diagram requires more than 5 distinct nodes or complex connections, **SPLIT IT** into multiple steps.
    - Better to have 3 simple steps than 1 messy step.
-   - Step 1: "Setup/Inputs", Step 2: "Process", Step 3: "Outputs".
-
-3. **Avoid Overlaps**:
-   - **Use Curves**: Use \`drawCurve\` with different offsets to route connections *around* other boxes or text.
-   - **Spacing**: Keep at least 50px buffer between shapes.
-   - **Text Safety**: Never draw a line or arrow through a text label.
 
 4. **Animation & Storytelling**:
    - Group related drawing commands together.
-   - Example order: Draw Box A -> Label Box A -> Draw Box B -> Label Box B -> Draw Arrow A to B.
+   - Example: Draw Box -> Label Box -> Draw Arrow.
 
 5. **Styling**:
-   - Fills: '#e0f2fe' (blue), '#fef3c7' (yellow), '#dcfce7' (green), '#fee2e2' (red).
-   - Text Size: Title=28, Label=24, Note=18. **Keep text small enough to fit inside shapes.**
+   - **Base Fills**: '#e0f2fe' (light blue), '#fef3c7' (light yellow), '#dcfce7' (light green), '#fee2e2' (light red).
+   - **Highlight Fills**: 'rgba(255, 200, 0, 0.3)' (Gold), 'rgba(0, 200, 255, 0.2)' (Cyan).
+   - Text Size: Title=28, Label=24, Note=18.
 
 **Example Code:**
+// 1. Draw Background
 rc.rectangle(100, 200, 150, 100, { fill: '#e0f2fe', fillStyle: 'solid' });
+
+// 2. Draw Text (On Top)
 drawText(\`Server\`, 175, 250, { size: 24 });
 
-rc.rectangle(500, 200, 150, 100, { fill: '#fef3c7', fillStyle: 'solid' });
-drawText(\`Database\`, 575, 250, { size: 24 });
-
-// Curve avoids hitting the center area
-drawCurve(250, 250, 500, 250, -100, { color: 'red', arrow: true }); 
-drawText(\`Query\`, 375, 180, { size: 18, color: 'red' });
+// 3. Highlight Logic (Transparent)
+rc.rectangle(100, 200, 150, 50, { fill: 'rgba(255, 255, 0, 0.3)', fillStyle: 'solid', stroke: 'none' });
+drawText(\`Active\`, 175, 225, { size: 16, color: '#b45309' });
 `;
 
 export const generateSketchSteps = async (query: string): Promise<SketchResponse> => {

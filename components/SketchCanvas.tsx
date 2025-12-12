@@ -123,12 +123,20 @@ const SketchCanvas: React.FC<SketchCanvasProps> = ({
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         
+        // Add white shadow/halo to ensure text is visible even if background color is close or slightly overlapping
+        ctx.shadowColor = "rgba(255, 255, 255, 0.8)";
+        ctx.shadowBlur = 4;
+        ctx.shadowOffsetX = 0;
+        ctx.shadowOffsetY = 0;
+        
         // Handle both actual newlines (from backticks) and literal "\n" sequences
         const lines = String(text).split(/\r?\n|\\n/);
         const lineHeight = fontSize * 1.2; 
         const startY = y - ((lines.length - 1) * lineHeight) / 2;
 
         lines.forEach((line: string, i: number) => {
+          // Double draw to strengthen opacity and halo
+          ctx.fillText(line, x, startY + (i * lineHeight));
           ctx.fillText(line, x, startY + (i * lineHeight));
         });
         ctx.restore();
