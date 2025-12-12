@@ -5,16 +5,43 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AI Sketchy</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Patrick+Hand&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Patrick+Hand&family=Google+Sans:wght@400;500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
     <style>
       body {
-        font-family: 'Inter', sans-serif;
-        background-color: #f5f5f4; /* Stone-100 */
-        background-image: radial-gradient(#d6d3d1 1px, transparent 1px);
+        font-family: 'Google Sans', 'Inter', sans-serif;
+        background-color: #f8f9fa; /* Google Gray 50 */
+        background-image: radial-gradient(#e9ecef 1px, transparent 1px);
         background-size: 24px 24px;
       }
       .hand-font {
         font-family: 'Patrick Hand', cursive;
+      }
+      
+      /* Animated Gradient Flow */
+      @keyframes flow {
+        0% { background-position: 0% 50%; }
+        50% { background-position: 100% 50%; }
+        100% { background-position: 0% 50%; }
+      }
+      .animate-flow {
+        background-size: 200% 200%;
+        animation: flow 3s ease infinite;
+      }
+
+      /* Soft Scrollbar */
+      ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+      }
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #dadce0;
+        border-radius: 4px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #bdc1c6;
       }
     </style>
   <script type="importmap">

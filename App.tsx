@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Pencil, Search, Loader2, Volume2, StopCircle, History, Trash2, ChevronRight, Video, Download, RefreshCw, VolumeX } from 'lucide-react';
+import { Pencil, Search, Loader2, Volume2, StopCircle, History, Trash2, ChevronRight, Video, Download, RefreshCw, VolumeX, Sparkles } from 'lucide-react';
 import { generateSketchSteps, generateSpeech, regenerateSingleStep } from './services/geminiService';
 import { getHistory, saveHistoryItem, deleteHistoryItem } from './services/storageService';
 import { base64ToBytes, pcmToAudioBuffer } from './utils/audio';
@@ -347,10 +347,7 @@ const App: React.FC = () => {
     if (!query.trim()) return;
 
     stopSpeaking();
-    
-    // Reset quota flag on new search to try again
     setQuotaExceeded(false); 
-    
     setShowDropdown(false);
     
     setAppState(AppState.LOADING);
@@ -379,7 +376,6 @@ const App: React.FC = () => {
   const loadHistoryItem = (item: HistoryItem) => {
     stopSpeaking();
     setQuotaExceeded(false);
-    
     setQuery(item.query);
     setSteps(item.steps);
     setCurrentStepIndex(0);
@@ -424,19 +420,20 @@ const App: React.FC = () => {
   const currentStepData = steps[currentStepIndex];
 
   return (
-    <div className="h-screen flex flex-col overflow-hidden bg-[#f5f5f4] text-stone-900 font-sans">
+    <div className="h-screen flex flex-col overflow-hidden bg-[#f8f9fa] text-slate-800 font-sans">
       
       {/* Header */}
-      <header className="shrink-0 w-full bg-white/90 backdrop-blur-sm border-b border-stone-200 z-20">
+      <header className="shrink-0 w-full bg-white/90 backdrop-blur-md border-b border-slate-200 z-20">
         <div className="max-w-screen-2xl mx-auto px-6 py-3 flex items-center justify-between gap-4">
           <div 
             className="flex items-center gap-3 cursor-pointer group shrink-0" 
             onClick={() => { if(!isExporting) { stopSpeaking(); setAppState(AppState.IDLE); setQuery(''); } }}
           >
-            <div className="bg-stone-900 text-white p-2 rounded-lg shadow-sm group-hover:scale-105 transition-transform">
+            {/* Logo updated to Blue */}
+            <div className="bg-blue-600 text-white p-2 rounded-xl shadow-sm group-hover:scale-105 transition-transform">
               <Pencil size={20} />
             </div>
-            <h1 className="hand-font text-2xl font-bold tracking-wide select-none group-hover:text-stone-700 transition-colors hidden sm:block">
+            <h1 className="hand-font text-2xl font-bold tracking-wide select-none text-slate-700 group-hover:text-blue-600 transition-colors hidden sm:block">
               AI Sketchy
             </h1>
           </div>
@@ -445,7 +442,10 @@ const App: React.FC = () => {
             <div className="flex-1 flex items-center justify-end gap-3 max-w-3xl">
                
                {/* Search Bar with History Dropdown */}
-               <div className="relative w-full max-w-md z-30">
+               <div className="relative w-full max-w-md z-30 group">
+                 {/* Animated Gradient Border for Header Input (Subtle) */}
+                 <div className="absolute -inset-0.5 bg-gradient-to-r from-blue-500 via-red-500 to-yellow-500 rounded-full opacity-0 group-focus-within:opacity-100 transition duration-500 blur-sm"></div>
+                 
                  <form onSubmit={handleSearch} className="relative w-full">
                    <input
                      type="text"
@@ -453,18 +453,18 @@ const App: React.FC = () => {
                      onFocus={() => setShowDropdown(true)}
                      onBlur={() => setTimeout(() => setShowDropdown(false), 200)}
                      onChange={(e) => setQuery(e.target.value)}
-                     className="w-full h-10 pl-4 pr-10 rounded-full border border-stone-300 bg-stone-50 focus:bg-white focus:border-stone-800 focus:ring-2 focus:ring-stone-100 outline-none transition-all text-sm"
+                     className="relative w-full h-10 pl-5 pr-10 rounded-full border border-slate-200 bg-slate-50 focus:bg-white focus:border-transparent outline-none transition-all text-sm placeholder:text-slate-400 text-slate-700 shadow-sm"
                      disabled={isLoading || isExporting}
                      placeholder="Ask another question..."
                    />
-                   <button type="submit" disabled={isExporting} className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-800">
+                   <button type="submit" disabled={isExporting} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-blue-600 transition-colors">
                       <Search size={16} />
                    </button>
                  </form>
 
                  {/* History Dropdown */}
                  {showDropdown && (
-                   <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-xl border border-stone-200 shadow-xl overflow-hidden max-h-[400px] overflow-y-auto animate-in fade-in slide-in-from-top-2 duration-200">
+                   <div className="absolute top-full left-0 right-0 mt-3 bg-white rounded-2xl border border-slate-100 shadow-2xl overflow-hidden max-h-[400px] overflow-y-auto animate-in fade-in slide-in-from-top-2 duration-200">
                       {history.filter(h => !query || h.query.toLowerCase().includes(query.toLowerCase())).length > 0 ? (
                         history.filter(h => !query || h.query.toLowerCase().includes(query.toLowerCase())).map(h => (
                           <div 
@@ -473,19 +473,19 @@ const App: React.FC = () => {
                                 loadHistoryItem(h);
                                 setShowDropdown(false);
                               }}
-                              className="px-4 py-3 hover:bg-stone-50 cursor-pointer border-b border-stone-100 last:border-0 flex items-center justify-between group transition-colors"
+                              className="px-4 py-3 hover:bg-slate-50 cursor-pointer border-b border-slate-50 last:border-0 flex items-center justify-between group transition-colors"
                           >
                               <div className="flex items-center gap-3 overflow-hidden">
-                                <History size={14} className="text-stone-300 group-hover:text-stone-500 shrink-0" />
-                                <span className="text-sm font-medium text-stone-700 truncate group-hover:text-stone-900">{h.query}</span>
+                                <History size={14} className="text-slate-300 group-hover:text-blue-500 shrink-0" />
+                                <span className="text-sm font-medium text-slate-700 truncate group-hover:text-slate-900">{h.query}</span>
                               </div>
-                              <span className="text-xs text-stone-400 shrink-0">
+                              <span className="text-xs text-slate-400 shrink-0">
                                   {new Date(h.timestamp).toLocaleDateString()}
                               </span>
                           </div>
                         ))
                       ) : (
-                        <div className="px-4 py-4 text-center text-stone-400 text-sm italic">
+                        <div className="px-4 py-4 text-center text-slate-400 text-sm italic">
                           {history.length === 0 ? "No search history yet" : "No matches found"}
                         </div>
                       )}
@@ -498,10 +498,10 @@ const App: React.FC = () => {
                  <button
                     onClick={handleExportVideo}
                     disabled={isExporting}
-                    className={`shrink-0 h-10 flex items-center gap-2 px-4 rounded-full text-sm font-bold transition-all border ${
+                    className={`shrink-0 h-10 flex items-center gap-2 px-4 rounded-full text-sm font-bold transition-all border shadow-sm ${
                       isExporting
-                      ? 'bg-blue-50 text-blue-600 border-blue-200 cursor-not-allowed'
-                      : 'bg-stone-900 text-white border-stone-900 hover:bg-stone-800 hover:scale-105 active:scale-95 shadow-md'
+                      ? 'bg-blue-50 text-blue-600 border-blue-100 cursor-not-allowed'
+                      : 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700 hover:scale-105 active:scale-95'
                     }`}
                   >
                     {isExporting ? <Loader2 size={16} className="animate-spin" /> : <Video size={16} />}
@@ -520,30 +520,46 @@ const App: React.FC = () => {
         {isIdle && (
           <div className="absolute inset-0 overflow-y-auto">
             <div className="flex flex-col items-center justify-center p-4 min-h-full pt-20 pb-20">
-              <div className="text-center mb-8 max-w-2xl animate-in fade-in zoom-in duration-500">
-                <h2 className="text-5xl font-bold text-stone-800 mb-6 hand-font">What do you want to learn?</h2>
-                <p className="text-stone-500 text-xl">Enter a "How to" question and I'll draw you a step-by-step guide.</p>
+              <div className="text-center mb-10 max-w-2xl animate-in fade-in zoom-in duration-500">
+                <div className="inline-flex items-center justify-center p-3 bg-white rounded-2xl shadow-sm mb-6 border border-slate-100">
+                    <Sparkles className="text-yellow-500 mr-2" size={24} fill="#fbbf24" />
+                    <span className="font-bold text-slate-700">Visual Learning Assistant</span>
+                </div>
+                <h2 className="text-5xl md:text-6xl font-bold text-slate-800 mb-6 hand-font leading-tight">
+                  What do you want to <span className="text-blue-600 decoration-4 decoration-blue-200 underline underline-offset-4">learn</span>?
+                </h2>
+                <p className="text-slate-500 text-xl">Enter a "How to" question and I'll sketch a guide for you.</p>
               </div>
-              <form onSubmit={handleSearch} className="relative w-full max-w-2xl animate-in fade-in slide-in-from-bottom-4 duration-700">
-                <input
-                  type="text"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="e.g., How to tie a tie?"
-                  className="w-full pl-6 pr-14 py-5 text-xl rounded-2xl border-2 border-stone-200 bg-white text-stone-900 placeholder:text-stone-400 focus:border-stone-800 focus:ring-4 focus:ring-stone-100/50 outline-none shadow-2xl shadow-stone-200/50 transition-all"
-                />
-                <button
-                  type="submit"
-                  disabled={!query.trim()}
-                  className="absolute right-3 top-3 bottom-3 aspect-square bg-stone-900 text-white rounded-xl flex items-center justify-center hover:bg-stone-700 hover:scale-105 active:scale-95 disabled:opacity-50 transition-all"
-                >
-                  <Search size={24} />
-                </button>
-              </form>
+
+              {/* IDLE SEARCH BAR with Google Flow Animation */}
+              <div className="relative w-full max-w-2xl group animate-in fade-in slide-in-from-bottom-4 duration-700">
+                {/* The animated flowing border */}
+                <div className="absolute -inset-1 bg-gradient-to-r from-blue-500 via-red-500 via-yellow-500 to-green-500 rounded-3xl opacity-30 blur-md group-focus-within:opacity-80 transition duration-500 animate-flow"></div>
+                
+                <form onSubmit={handleSearch} className="relative flex items-center bg-white rounded-2xl shadow-xl overflow-hidden">
+                    <div className="pl-6 text-slate-400">
+                        <Search size={24} />
+                    </div>
+                    <input
+                    type="text"
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    placeholder="e.g., How does an engine work?"
+                    className="w-full h-16 pl-4 pr-16 text-xl text-slate-800 placeholder:text-slate-300 outline-none bg-transparent"
+                    />
+                    <button
+                    type="submit"
+                    disabled={!query.trim()}
+                    className="absolute right-2 top-2 bottom-2 aspect-square bg-blue-600 text-white rounded-xl flex items-center justify-center hover:bg-blue-700 hover:scale-105 active:scale-95 disabled:opacity-50 disabled:scale-100 transition-all"
+                    >
+                        <ChevronRight size={28} />
+                    </button>
+                </form>
+              </div>
 
               {history.length > 0 && (
                 <div className="w-full max-w-4xl mt-16 animate-in fade-in slide-in-from-bottom-8 duration-700 delay-100">
-                  <div className="flex items-center gap-2 mb-6 text-stone-400 font-bold tracking-wider text-sm uppercase">
+                  <div className="flex items-center gap-2 mb-6 text-slate-400 font-bold tracking-wider text-sm uppercase">
                     <History size={16} />
                     <span>Recent Sketches</span>
                   </div>
@@ -553,23 +569,23 @@ const App: React.FC = () => {
                       <div 
                         key={item.id}
                         onClick={() => loadHistoryItem(item)}
-                        className="group relative bg-white border border-stone-200 rounded-xl p-4 hover:border-stone-400 hover:shadow-lg transition-all cursor-pointer"
+                        className="group relative bg-white border border-slate-200 rounded-2xl p-5 hover:border-blue-300 hover:shadow-lg transition-all cursor-pointer"
                       >
-                        <h3 className="font-bold text-stone-800 mb-1 pr-8 truncate hand-font text-xl">{item.query}</h3>
-                        <p className="text-sm text-stone-500 line-clamp-2">{item.steps[0]?.description}</p>
+                        <h3 className="font-bold text-slate-800 mb-1 pr-8 truncate hand-font text-xl group-hover:text-blue-600 transition-colors">{item.query}</h3>
+                        <p className="text-sm text-slate-500 line-clamp-2">{item.steps[0]?.description}</p>
                         
-                        <div className="flex items-center justify-between mt-3 pt-3 border-t border-stone-100">
-                           <span className="text-xs text-stone-400">
+                        <div className="flex items-center justify-between mt-4 pt-4 border-t border-slate-50">
+                           <span className="text-xs text-slate-400">
                              {new Date(item.timestamp).toLocaleDateString()}
                            </span>
-                           <span className="text-stone-400 group-hover:text-stone-800 transition-colors">
+                           <span className="text-slate-300 group-hover:text-blue-500 transition-colors">
                              <ChevronRight size={16} />
                            </span>
                         </div>
 
                         <button 
                           onClick={(e) => deleteHistory(e, item.id)}
-                          className="absolute top-3 right-3 p-1.5 text-stone-300 hover:text-red-500 hover:bg-red-50 rounded-lg opacity-0 group-hover:opacity-100 transition-all"
+                          className="absolute top-4 right-4 p-1.5 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg opacity-0 group-hover:opacity-100 transition-all"
                           title="Delete from history"
                         >
                           <Trash2 size={16} />
@@ -585,11 +601,14 @@ const App: React.FC = () => {
 
         {/* LOADING STATE */}
         {isLoading && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/50 backdrop-blur-sm z-10">
-            <div className="bg-white p-8 rounded-3xl shadow-2xl border-2 border-dashed border-stone-300 flex flex-col items-center max-w-sm animate-in fade-in zoom-in duration-300">
-              <Loader2 className="animate-spin text-stone-800 mb-6" size={48} />
-              <p className="hand-font text-3xl text-stone-700 font-bold">Sketching...</p>
-              <p className="text-stone-500 mt-2 text-center">Breaking down your question into visual steps.</p>
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/60 backdrop-blur-sm z-10">
+            <div className="bg-white p-10 rounded-3xl shadow-2xl flex flex-col items-center max-w-sm animate-in fade-in zoom-in duration-300 relative overflow-hidden">
+               {/* Loader Gradient Border */}
+              <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-blue-500 via-red-500 to-yellow-500 animate-flow"></div>
+              
+              <Loader2 className="animate-spin text-blue-600 mb-6" size={48} />
+              <p className="hand-font text-3xl text-slate-800 font-bold">Sketching...</p>
+              <p className="text-slate-500 mt-2 text-center">Breaking down your question into visual steps.</p>
             </div>
           </div>
         )}
@@ -597,12 +616,12 @@ const App: React.FC = () => {
         {/* ERROR STATE */}
         {appState === AppState.ERROR && (
           <div className="absolute inset-0 flex items-center justify-center p-4">
-            <div className="bg-red-50 border-2 border-red-100 rounded-2xl p-8 text-center max-w-md shadow-xl">
-              <h3 className="text-red-900 font-bold text-xl mb-2">Oops!</h3>
-              <p className="text-red-700 mb-6">{errorMsg}</p>
+            <div className="bg-red-50 border border-red-100 rounded-3xl p-8 text-center max-w-md shadow-xl">
+              <h3 className="text-red-700 font-bold text-xl mb-2">Oops!</h3>
+              <p className="text-red-600 mb-6">{errorMsg}</p>
               <button 
                 onClick={() => setAppState(AppState.IDLE)}
-                className="bg-red-100 text-red-800 px-6 py-2 rounded-lg font-bold hover:bg-red-200 transition-colors"
+                className="bg-red-100 text-red-700 px-6 py-2 rounded-lg font-bold hover:bg-red-200 transition-colors"
               >
                 Try Again
               </button>
@@ -615,49 +634,49 @@ const App: React.FC = () => {
           <div className="w-full h-full flex flex-col lg:flex-row animate-in fade-in slide-in-from-bottom-4 duration-700">
             
             {/* LEFT PANEL: Canvas */}
-            <div className="flex-1 bg-stone-100 p-4 lg:p-8 flex items-center justify-center relative overflow-hidden">
+            <div className="flex-1 bg-slate-50 p-4 lg:p-8 flex items-center justify-center relative overflow-hidden">
               <div className="w-full h-full max-w-[1200px] flex items-center justify-center">
                  <SketchCanvas 
                     ref={canvasRef}
                     code={currentStepData.code} 
                     width={800} 
                     height={600} 
-                    className="max-h-full w-auto aspect-[4/3] shadow-2xl border-stone-800"
+                    className="max-h-full w-auto aspect-[4/3] shadow-2xl border-4 border-white ring-1 ring-slate-200"
                   />
               </div>
             </div>
 
             {/* RIGHT PANEL: Sidebar */}
-            <div className="shrink-0 w-full lg:w-[400px] xl:w-[450px] bg-white border-l border-stone-200 flex flex-col z-10 shadow-[-10px_0_20px_-10px_rgba(0,0,0,0.05)]">
+            <div className="shrink-0 w-full lg:w-[400px] xl:w-[450px] bg-white border-l border-slate-200 flex flex-col z-10 shadow-xl shadow-slate-200/50">
               
               {/* Content Area */}
               <div className="flex-1 overflow-y-auto p-6 lg:p-8">
                 
-                <div className="inline-block px-3 py-1 bg-stone-100 rounded-full text-xs font-bold text-stone-500 tracking-wider mb-6 border border-stone-200">
+                <div className="inline-block px-3 py-1 bg-blue-50 rounded-full text-xs font-bold text-blue-600 tracking-wider mb-6 border border-blue-100">
                   STEP {currentStepIndex + 1} OF {steps.length}
                 </div>
 
                 <div className="flex items-start gap-4 mb-6">
-                  <h2 className="hand-font text-3xl lg:text-4xl font-bold text-stone-800 leading-[1.1]">
+                  <h2 className="hand-font text-3xl lg:text-4xl font-bold text-slate-800 leading-[1.1]">
                     {currentStepData.title}
                   </h2>
                 </div>
 
-                <div className="prose prose-stone prose-lg leading-relaxed text-stone-600">
+                <div className="prose prose-slate prose-lg leading-relaxed text-slate-600">
                   <p>{currentStepData.description}</p>
                 </div>
 
-                <div className="flex flex-wrap gap-3 mt-6">
+                <div className="flex flex-wrap gap-3 mt-8">
                   {/* Audio Button */}
                   <button
                     onClick={toggleSpeech}
                     disabled={isExporting || quotaExceeded}
-                    className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-bold transition-all ${
+                    className={`flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-bold transition-all ${
                       isSpeaking 
-                      ? 'bg-red-50 text-red-600 ring-2 ring-red-100' 
+                      ? 'bg-red-50 text-red-600 ring-1 ring-red-200' 
                       : quotaExceeded
-                        ? 'bg-stone-100 text-stone-400 cursor-not-allowed'
-                        : 'bg-stone-50 text-stone-500 hover:bg-stone-100'
+                        ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-800'
                     }`}
                     title={quotaExceeded ? "Audio disabled due to API limits" : "Read description"}
                   >
@@ -669,7 +688,7 @@ const App: React.FC = () => {
                   <button
                     onClick={reGenerateSketch}
                     disabled={isRegenerating || isExporting}
-                    className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-bold transition-all bg-stone-50 text-stone-500 hover:bg-stone-100 border border-stone-200 ${
+                    className={`flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-bold transition-all bg-slate-50 text-slate-500 hover:bg-blue-50 hover:text-blue-600 border border-slate-200 hover:border-blue-200 ${
                         isRegenerating ? 'opacity-80 cursor-wait' : ''
                     }`}
                     title="Regenerate this specific sketch if it looks wrong"
@@ -681,7 +700,7 @@ const App: React.FC = () => {
               </div>
 
               {/* Footer Controls */}
-              <div className="p-6 border-t border-stone-100 bg-stone-50/50">
+              <div className="p-6 border-t border-slate-100 bg-slate-50/50">
                 <StepControls 
                   currentStep={currentStepIndex}
                   totalSteps={steps.length}

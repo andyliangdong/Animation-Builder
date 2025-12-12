@@ -183,7 +183,7 @@ const SketchCanvas = forwardRef<SketchCanvasHandle, SketchCanvasProps>(({
   }));
 
   return (
-    <div className={`relative bg-white rounded-xl overflow-hidden border-4 border-stone-900 shadow-xl ${className}`}>
+    <div className={`relative bg-white rounded-xl overflow-hidden ${className}`}>
       <canvas
         ref={canvasRef}
         width={width}
@@ -196,7 +196,7 @@ const SketchCanvas = forwardRef<SketchCanvasHandle, SketchCanvasProps>(({
         </div>
       )}
       <div className="absolute bottom-3 right-3 opacity-40 pointer-events-none select-none">
-        <span className="hand-font text-stone-400 text-xl font-bold">AI Sketchy</span>
+        <span className="hand-font text-slate-400 text-xl font-bold">AI Sketchy</span>
       </div>
     </div>
   );

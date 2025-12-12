@@ -17,44 +17,44 @@ const StepControls: React.FC<StepControlsProps> = ({
   onReset
 }) => {
   return (
-    <div className="flex items-center justify-between w-full bg-stone-50 p-2 rounded-xl border-2 border-stone-200">
+    <div className="flex items-center justify-between w-full bg-white p-2 rounded-2xl border border-slate-200 shadow-sm">
       <div className="flex items-center gap-3">
         <button
           onClick={onReset}
-          className="p-2 text-stone-500 hover:text-stone-900 hover:bg-stone-200 rounded-lg transition-colors"
+          className="p-2.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-colors"
           title="Start Over"
         >
-          <RotateCcw size={18} />
+          <RotateCcw size={20} />
         </button>
-        <span className="font-mono text-xs font-bold text-stone-400 tracking-wider">
-          STEP {currentStep + 1} / {totalSteps}
+        <span className="font-mono text-xs font-bold text-slate-400 tracking-wider">
+          {currentStep + 1} / {totalSteps}
         </span>
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-3">
         <button
           onClick={onPrev}
           disabled={currentStep === 0}
           className={`
-            flex items-center justify-center w-10 h-10 rounded-lg font-bold border-2 transition-all
+            flex items-center justify-center w-10 h-10 rounded-xl font-bold transition-all
             ${currentStep === 0 
-              ? 'border-transparent text-stone-300 cursor-not-allowed' 
-              : 'border-stone-200 bg-white text-stone-800 hover:border-stone-400 hover:shadow-sm active:translate-y-0.5'
+              ? 'text-slate-200 cursor-not-allowed' 
+              : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900 active:scale-95'
             }
           `}
           title="Previous Step"
         >
-          <ChevronLeft size={20} />
+          <ChevronLeft size={24} />
         </button>
         
         <button
           onClick={onNext}
           disabled={currentStep === totalSteps - 1}
           className={`
-            flex items-center gap-1 px-4 h-10 rounded-lg font-bold border-2 transition-all shadow-sm
+            flex items-center gap-2 px-5 h-10 rounded-xl font-bold transition-all shadow-sm
             ${currentStep === totalSteps - 1 
-              ? 'border-stone-200 bg-stone-100 text-stone-300 cursor-not-allowed shadow-none' 
-              : 'bg-stone-900 border-stone-900 text-white hover:bg-stone-800 active:translate-y-0.5 shadow-md'
+              ? 'bg-slate-100 text-slate-300 cursor-not-allowed shadow-none' 
+              : 'bg-blue-600 text-white hover:bg-blue-700 active:scale-95 shadow-blue-200'
             }
           `}
         >
