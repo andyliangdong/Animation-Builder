@@ -13,55 +13,101 @@ const App: React.FC = () => {
   const [steps, setSteps] = useState<SketchStep[]>([]);
   const [currentStepIndex, setCurrentStepIndex] = useState(0);
   const [errorMsg, setErrorMsg] = useState('');
+  
+  // Audio State
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isLoadingAudio, setIsLoadingAudio] = useState(false);
+  
+  // Export State
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState('');
+  
   const [history, setHistory] = useState<HistoryItem[]>([]);
   
   const canvasRef = useRef<SketchCanvasHandle>(null);
 
-  // Refs for export process
-  const exportCtxRef = useRef<AudioContext | null>(null);
-  const exportDestRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+  // Audio References
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const activeSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const audioCacheRef = useRef<Map<number, AudioBuffer>>(new Map()); // Cache for Gemini TTS buffers
+
+  // Export References
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioBuffersRef = useRef<AudioBuffer[]>([]);
   const chunksRef = useRef<Blob[]>([]);
+
+  // Initialize AudioContext lazily
+  const getAudioContext = useCallback(() => {
+    if (!audioContextRef.current) {
+      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({sampleRate: 24000});
+    }
+    return audioContextRef.current;
+  }, []);
 
   // Load history on mount
   useEffect(() => {
     setHistory(getHistory());
   }, []);
 
-  // --- Speech Logic (Standard) ---
-
-  const speak = useCallback((text: string) => {
-    window.speechSynthesis.cancel();
-    
-    const utterance = new SpeechSynthesisUtterance(text);
-    const voices = window.speechSynthesis.getVoices();
-    const preferredVoice = voices.find(v => v.lang.startsWith('en') && v.name.includes('Google')) || 
-                           voices.find(v => v.lang.startsWith('en'));
-    if (preferredVoice) utterance.voice = preferredVoice;
-    
-    utterance.rate = 1.0;
-    
-    utterance.onstart = () => setIsSpeaking(true);
-    utterance.onend = () => setIsSpeaking(false);
-    utterance.onerror = () => setIsSpeaking(false);
-    
-    window.speechSynthesis.speak(utterance);
-  }, []);
+  // --- Audio Logic (Gemini TTS) ---
 
   const stopSpeaking = useCallback(() => {
-    window.speechSynthesis.cancel();
+    if (activeSourceRef.current) {
+      activeSourceRef.current.stop();
+      activeSourceRef.current = null;
+    }
     setIsSpeaking(false);
   }, []);
+
+  const playAudioForStep = useCallback(async (index: number) => {
+    const step = steps[index];
+    if (!step) return;
+
+    stopSpeaking();
+
+    try {
+      const ctx = getAudioContext();
+      // Resume context if suspended (browser requirement)
+      if (ctx.state === 'suspended') {
+        await ctx.resume();
+      }
+
+      let buffer = audioCacheRef.current.get(index);
+
+      if (!buffer) {
+        setIsLoadingAudio(true);
+        const text = `${step.title}. ${step.description}`;
+        const b64 = await generateSpeech(text);
+        const bytes = base64ToBytes(b64);
+        buffer = pcmToAudioBuffer(bytes, ctx);
+        audioCacheRef.current.set(index, buffer);
+        setIsLoadingAudio(false);
+      }
+
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(ctx.destination);
+      
+      source.onended = () => {
+        setIsSpeaking(false);
+        activeSourceRef.current = null;
+      };
+
+      source.start();
+      activeSourceRef.current = source;
+      setIsSpeaking(true);
+
+    } catch (err) {
+      console.error("Audio Playback Error:", err);
+      setIsLoadingAudio(false);
+      setIsSpeaking(false);
+    }
+  }, [steps, getAudioContext, stopSpeaking]);
 
   const toggleSpeech = () => {
     if (isSpeaking) {
       stopSpeaking();
-    } else if (currentStepData) {
-      speak(`${currentStepData.title}. ${currentStepData.description}`);
+    } else {
+      playAudioForStep(currentStepIndex);
     }
   };
 
@@ -69,27 +115,26 @@ const App: React.FC = () => {
   useEffect(() => {
     return () => {
       stopSpeaking();
-      if (exportCtxRef.current) exportCtxRef.current.close();
+      if (audioContextRef.current) {
+        audioContextRef.current.close();
+      }
     };
   }, [stopSpeaking]);
 
-  // --- Auto Play (when not exporting) ---
-
-  const currentStepData = steps[currentStepIndex];
+  // --- Auto Play Logic ---
 
   useEffect(() => {
-    if (appState === AppState.SUCCESS && currentStepData && !isExporting) {
+    // Only auto-play if we are successful, have steps, and NOT currently exporting video
+    if (appState === AppState.SUCCESS && steps.length > 0 && !isExporting) {
       const timer = setTimeout(() => {
-        speak(`${currentStepData.title}. ${currentStepData.description}`);
+        playAudioForStep(currentStepIndex);
       }, 500);
       return () => clearTimeout(timer);
-    } else if (!isExporting) {
-      stopSpeaking();
     }
-  }, [currentStepIndex, appState, currentStepData, speak, stopSpeaking, isExporting]);
+  }, [currentStepIndex, appState, steps, isExporting, playAudioForStep]);
 
 
-  // --- Export Video Logic (All Steps) ---
+  // --- Export Video Logic (Optimized) ---
 
   const handleExportVideo = async () => {
     if (steps.length === 0 || isExporting) return;
@@ -99,38 +144,40 @@ const App: React.FC = () => {
     setExportProgress('Preparing Audio...');
 
     try {
-      // 1. Initialize Audio Context & Recorder
-      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)({sampleRate: 24000});
-      exportCtxRef.current = ctx;
+      const ctx = getAudioContext();
+      if (ctx.state === 'suspended') await ctx.resume();
       
+      // Setup stream destination
       const dest = ctx.createMediaStreamDestination();
-      exportDestRef.current = dest;
 
-      // 2. Pre-generate ALL audio buffers
-      const buffers: AudioBuffer[] = [];
+      // 1. Ensure ALL audio buffers are cached
       for (let i = 0; i < steps.length; i++) {
-        setExportProgress(`Generating Audio (${i + 1}/${steps.length})...`);
-        const step = steps[i];
-        const text = `${step.title}. ${step.description}`;
-        const b64 = await generateSpeech(text);
-        const bytes = base64ToBytes(b64);
-        const buffer = pcmToAudioBuffer(bytes, ctx);
-        buffers.push(buffer);
+        if (!audioCacheRef.current.has(i)) {
+          setExportProgress(`Generating Audio (${i + 1}/${steps.length})...`);
+          const step = steps[i];
+          const text = `${step.title}. ${step.description}`;
+          const b64 = await generateSpeech(text);
+          const bytes = base64ToBytes(b64);
+          const buffer = pcmToAudioBuffer(bytes, ctx);
+          audioCacheRef.current.set(i, buffer);
+        }
       }
-      audioBuffersRef.current = buffers;
 
-      // 3. Setup MediaRecorder with Canvas Stream
+      // 2. Setup MediaRecorder
       setExportProgress('Starting Recording...');
       const canvasElement = canvasRef.current?.getCanvas();
       if (!canvasElement) throw new Error("Canvas not found");
       
-      const canvasStream = canvasElement.captureStream(30);
+      const canvasStream = canvasElement.captureStream(30); // 30 FPS
       const combinedStream = new MediaStream([
         ...canvasStream.getVideoTracks(),
         ...dest.stream.getAudioTracks()
       ]);
 
-      const recorder = new MediaRecorder(combinedStream, { mimeType: 'video/webm; codecs=vp9' });
+      const recorder = new MediaRecorder(combinedStream, { 
+        mimeType: 'video/webm; codecs=vp9',
+        videoBitsPerSecond: 2500000 // 2.5 Mbps
+      });
       chunksRef.current = [];
       
       recorder.ondataavailable = (e) => {
@@ -148,23 +195,52 @@ const App: React.FC = () => {
         
         setIsExporting(false);
         setExportProgress('');
-        if (exportCtxRef.current) {
-            exportCtxRef.current.close();
-            exportCtxRef.current = null;
-        }
+        
+        // Return to first step or current step
+        // We stay on the last step played usually
       };
 
       mediaRecorderRef.current = recorder;
       recorder.start();
 
-      // 4. Start the Sequence at Step 0
-      // We explicitly set index to 0. The useEffect below handles the playback logic.
-      if (currentStepIndex !== 0) {
-        setCurrentStepIndex(0);
-      } else {
-        // Force trigger if we are already at 0
-        playExportStep(0);
-      }
+      // 3. Playback Sequence
+      // Helper to play a single step for export
+      const playExportStep = (index: number) => {
+        if (index >= steps.length) {
+          // Finished
+          setTimeout(() => mediaRecorderRef.current?.stop(), 1000);
+          return;
+        }
+
+        setExportProgress(`Recording Step ${index + 1}/${steps.length}...`);
+        
+        // Set visual state
+        setCurrentStepIndex(index);
+        
+        // Force canvas replay
+        setTimeout(() => {
+           canvasRef.current?.replay();
+           
+           // Get cached buffer
+           const buffer = audioCacheRef.current.get(index);
+           if (!buffer) return; // Should not happen
+
+           const source = ctx.createBufferSource();
+           source.buffer = buffer;
+           source.connect(dest);
+           source.connect(ctx.destination); // Feedback to user
+
+           source.onended = () => {
+             // Delay before next step
+             setTimeout(() => playExportStep(index + 1), 1000);
+           };
+
+           source.start();
+        }, 100); // Short delay to ensure React updated the canvas code prop
+      };
+
+      // Start the chain
+      playExportStep(0);
 
     } catch (err) {
       console.error("Export failed", err);
@@ -174,54 +250,6 @@ const App: React.FC = () => {
     }
   };
 
-  const playExportStep = (index: number) => {
-    const ctx = exportCtxRef.current;
-    const dest = exportDestRef.current;
-    const buffer = audioBuffersRef.current[index];
-
-    if (!ctx || !dest || !buffer) return;
-
-    setExportProgress(`Recording Step ${index + 1}/${steps.length}...`);
-
-    const source = ctx.createBufferSource();
-    source.buffer = buffer;
-    source.connect(dest);
-    source.connect(ctx.destination); // Play on speakers too
-
-    source.onended = () => {
-      if (index < steps.length - 1) {
-        // Move to next step after a short pause
-        setTimeout(() => {
-          setCurrentStepIndex(index + 1);
-        }, 800);
-      } else {
-        // Finish recording after a short tail
-        setTimeout(() => {
-          mediaRecorderRef.current?.stop();
-        }, 1000);
-      }
-    };
-
-    // Force canvas replay to sync with audio start
-    // Note: If 'currentStepIndex' just changed, the canvas is already replaying via its own useEffect.
-    // If we call replay() here, it might restart it. 
-    // Optimization: Only manual replay if needed, but since we just changed index, it should be fine.
-    // However, if we are at step 0 and triggered manually, we might want to replay.
-    canvasRef.current?.replay();
-    
-    source.start(0);
-  };
-
-  // Watch for step changes during export to trigger playback
-  useEffect(() => {
-    if (isExporting && audioBuffersRef.current.length > 0) {
-      playExportStep(currentStepIndex);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentStepIndex, isExporting]); 
-  // We exclude playExportStep from deps to avoid infinite loops, relying on index change.
-
-
   // --- Search Logic ---
 
   const handleSearch = async (e: React.FormEvent) => {
@@ -229,6 +257,9 @@ const App: React.FC = () => {
     if (!query.trim()) return;
 
     stopSpeaking();
+    // Clear audio cache on new search
+    audioCacheRef.current.clear();
+    
     setAppState(AppState.LOADING);
     setSteps([]);
     setErrorMsg('');
@@ -239,8 +270,8 @@ const App: React.FC = () => {
       if (data.steps && data.steps.length > 0) {
         setSteps(data.steps);
         setAppState(AppState.SUCCESS);
-        const updatedHistory = saveHistoryItem(query, data.steps);
-        setHistory(updatedHistory);
+        saveHistoryItem(query, data.steps);
+        setHistory(getHistory());
       } else {
         throw new Error("No steps generated.");
       }
@@ -254,6 +285,8 @@ const App: React.FC = () => {
 
   const loadHistoryItem = (item: HistoryItem) => {
     stopSpeaking();
+    audioCacheRef.current.clear();
+    
     setQuery(item.query);
     setSteps(item.steps);
     setCurrentStepIndex(0);
@@ -262,35 +295,37 @@ const App: React.FC = () => {
 
   const deleteHistory = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    const updated = deleteHistoryItem(id);
-    setHistory(updated);
+    deleteHistoryItem(id);
+    setHistory(getHistory());
   };
 
   const isIdle = appState === AppState.IDLE;
   const isSuccess = appState === AppState.SUCCESS;
   const isLoading = appState === AppState.LOADING;
 
+  const currentStepData = steps[currentStepIndex];
+
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-[#f5f5f4] text-stone-900 font-sans">
       
       {/* Header */}
       <header className="shrink-0 w-full bg-white/90 backdrop-blur-sm border-b border-stone-200 z-20">
-        <div className="max-w-screen-2xl mx-auto px-6 py-3 flex items-center justify-between">
+        <div className="max-w-screen-2xl mx-auto px-6 py-3 flex items-center justify-between gap-4">
           <div 
-            className="flex items-center gap-3 cursor-pointer group" 
+            className="flex items-center gap-3 cursor-pointer group shrink-0" 
             onClick={() => { if(!isExporting) { stopSpeaking(); setAppState(AppState.IDLE); setQuery(''); } }}
           >
             <div className="bg-stone-900 text-white p-2 rounded-lg shadow-sm group-hover:scale-105 transition-transform">
               <Pencil size={20} />
             </div>
-            <h1 className="hand-font text-2xl font-bold tracking-wide select-none group-hover:text-stone-700 transition-colors">
+            <h1 className="hand-font text-2xl font-bold tracking-wide select-none group-hover:text-stone-700 transition-colors hidden sm:block">
               AI Sketchy
             </h1>
           </div>
 
           {!isIdle && (
-            <div className="flex-1 max-w-xl mx-8 hidden md:block">
-               <form onSubmit={handleSearch} className="relative">
+            <div className="flex-1 flex items-center justify-end gap-3 max-w-3xl">
+               <form onSubmit={handleSearch} className="relative w-full max-w-md">
                  <input
                    type="text"
                    value={query}
@@ -302,6 +337,22 @@ const App: React.FC = () => {
                     <Search size={16} />
                  </button>
                </form>
+
+               {/* GLOBAL EXPORT BUTTON */}
+               {isSuccess && (
+                 <button
+                    onClick={handleExportVideo}
+                    disabled={isExporting}
+                    className={`shrink-0 flex items-center gap-2 px-4 py-2 rounded-full text-sm font-bold transition-all border ${
+                      isExporting
+                      ? 'bg-blue-50 text-blue-600 border-blue-200 cursor-not-allowed'
+                      : 'bg-stone-900 text-white border-stone-900 hover:bg-stone-800 hover:scale-105 active:scale-95 shadow-md'
+                    }`}
+                  >
+                    {isExporting ? <Loader2 size={16} className="animate-spin" /> : <Video size={16} />}
+                    <span className="hidden sm:inline">{isExporting ? exportProgress || 'Exporting...' : 'Export Video'}</span>
+                  </button>
+               )}
             </div>
           )}
         </div>
@@ -452,22 +503,8 @@ const App: React.FC = () => {
                       : 'bg-stone-50 text-stone-500 hover:bg-stone-100'
                     }`}
                   >
-                    {isSpeaking ? <StopCircle size={18} /> : <Volume2 size={18} />}
-                    {isSpeaking ? 'Reading...' : 'Replay Audio'}
-                  </button>
-
-                  {/* Export Button */}
-                  <button
-                    onClick={handleExportVideo}
-                    disabled={isExporting}
-                    className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-bold transition-all border border-stone-200 ${
-                      isExporting
-                      ? 'bg-blue-50 text-blue-600 ring-2 ring-blue-100 cursor-not-allowed'
-                      : 'bg-white text-stone-600 hover:bg-stone-50 hover:text-stone-900 hover:border-stone-300'
-                    }`}
-                  >
-                    {isExporting ? <Loader2 size={18} className="animate-spin" /> : <Video size={18} />}
-                    {isExporting ? exportProgress || 'Exporting...' : 'Export Video'}
+                    {isSpeaking ? <StopCircle size={18} /> : isLoadingAudio ? <Loader2 size={18} className="animate-spin" /> : <Volume2 size={18} />}
+                    {isSpeaking ? 'Reading...' : isLoadingAudio ? 'Loading Audio...' : 'Replay Audio'}
                   </button>
                 </div>
               </div>

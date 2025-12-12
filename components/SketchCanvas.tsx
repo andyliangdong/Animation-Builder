@@ -34,7 +34,10 @@ const SketchCanvas = forwardRef<SketchCanvasHandle, SketchCanvasProps>(({
     if (!ctx) return;
 
     // Reset canvas and timers
-    ctx.clearRect(0, 0, width, height);
+    // CRITICAL FIX: Fill with white instead of clearRect to ensure video background is white, not transparent/black
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, width, height);
+    
     timeoutsRef.current.forEach(clearTimeout);
     timeoutsRef.current = [];
 
