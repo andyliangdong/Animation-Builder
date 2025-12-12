@@ -69,15 +69,23 @@ Write code in the order it should appear (e.g., Draw Node A -> Draw Node B -> Dr
      - **Bad Highlight**: \`fill: '#FFD700'\` (Solid opaque - WILL HIDE TEXT).
    - **No Intersection**: Do not draw lines through text.
 
-3. **Prevent Overcrowding (SPLIT STEPS)**:
+3. **Spatial Layout & Overlap Prevention (CRITICAL)**:
+   - **Avoid Central Overlap**: When drawing a new main component (like a processor, LLM, or aggregation box), **NEVER** place it directly on top of previous input nodes.
+   - **Directional Flow**: Use a clear direction (e.g., Inputs on Top -> Processing in Middle -> Outputs on Bottom).
+   - **Safe Zones**: 
+     - If Inputs are at Y=100, place Processing at Y=300 or Y=400.
+     - If Inputs are on Left (X=100), place Processing on Right (X=500).
+   - **Example**: If you drew "Image Data" at (150, 150) in Step 1, do NOT draw the "LLM" box at (150, 150) in Step 2. Draw it at (400, 150) or (150, 400).
+
+4. **Prevent Overcrowding (SPLIT STEPS)**:
    - **Rule**: If a diagram requires more than 5 distinct nodes or complex connections, **SPLIT IT** into multiple steps.
    - Better to have 3 simple steps than 1 messy step.
 
-4. **Animation & Storytelling**:
+5. **Animation & Storytelling**:
    - Group related drawing commands together.
    - Example: Draw Box -> Label Box -> Draw Arrow.
 
-5. **Styling**:
+6. **Styling**:
    - **Base Fills**: '#e0f2fe' (light blue), '#fef3c7' (light yellow), '#dcfce7' (light green), '#fee2e2' (light red).
    - **Highlight Fills**: 'rgba(255, 200, 0, 0.3)' (Gold), 'rgba(0, 200, 255, 0.2)' (Cyan).
    - Text Size: Title=28, Label=24, Note=18.

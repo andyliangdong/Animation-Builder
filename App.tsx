@@ -514,8 +514,18 @@ const App: React.FC = () => {
                 <StepControls 
                   currentStep={currentStepIndex}
                   totalSteps={steps.length}
-                  onNext={() => !isExporting && setCurrentStepIndex(p => Math.min(steps.length - 1, p + 1))}
-                  onPrev={() => !isExporting && setCurrentStepIndex(p => Math.max(0, p - 1))}
+                  onNext={() => {
+                    if (!isExporting) {
+                      stopSpeaking();
+                      setCurrentStepIndex(p => Math.min(steps.length - 1, p + 1));
+                    }
+                  }}
+                  onPrev={() => {
+                    if (!isExporting) {
+                      stopSpeaking();
+                      setCurrentStepIndex(p => Math.max(0, p - 1));
+                    }
+                  }}
                   onReset={() => {
                     if (isExporting) return;
                     stopSpeaking();
